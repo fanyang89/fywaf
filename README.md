@@ -67,6 +67,18 @@ Compatibility report command for CRS-style rules:
 cargo run --bin fywaf-compat -- --rules-dir /path/to/coreruleset/rules
 ```
 
+CRS import command (v1 subset):
+
+```bash
+cargo run --bin fywaf-import-crs -- --rules-dir /path/to/coreruleset/rules --out examples/crs.import.yml --report-out examples/crs.import.report.txt
+```
+
+Then build the snapshot and point `engine.snapshot_path` to the `.bin` output:
+
+```bash
+cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules.snapshot.bin
+```
+
 ## Notes / Current Limits
 
 - HTTP/1.1 only
