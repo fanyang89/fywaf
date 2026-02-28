@@ -12,6 +12,7 @@
   - HTTP method
   - path prefix
   - User-Agent substring
+  - generic conditions (`target + operator`) for method/path/query/body/header/ip
 - Fail-fast config validation for invalid `site -> profile` mappings
 - Structured key-value logs via `tracing`
 
@@ -41,6 +42,30 @@ curl -v http://127.0.0.1:8081/admin
 ## Config
 
 See [`examples/config.yml`](examples/config.yml).
+
+Condition operators currently supported in `rules[].conditions`:
+
+- `eq`
+- `contains`
+- `prefix`
+- `suffix`
+- `regex`
+- `in`
+- `ip_match` (for `client_ip` target)
+
+Condition transforms currently supported in `rules[].conditions[].transforms`:
+
+- `none`
+- `lowercase`
+- `url_decode`
+- `compress_whitespace`
+- `remove_nulls`
+
+Compatibility report command for CRS-style rules:
+
+```bash
+cargo run --bin fywaf-compat -- --rules-dir /path/to/coreruleset/rules
+```
 
 ## Notes / Current Limits
 

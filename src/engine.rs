@@ -4,8 +4,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
+use regex::Regex;
 
-use crate::config::{Action, AppConfig, EngineConfig, RuleConfig};
+use crate::config::{
+    Action, AppConfig, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform,
+    EngineConfig, RuleConfig,
+};
 use crate::snapshot::{EngineSnapshot, SnapshotProfile};
 
 #[derive(Debug)]
@@ -31,6 +35,36 @@ struct CompiledRule {
     path_prefixes: Vec<String>,
     ip_cidrs: Vec<Cidr>,
     user_agent_contains: Vec<String>,
+    conditions: Vec<CompiledCondition>,
+}
+
+#[derive(Debug)]
+struct CompiledCondition {
+    source: ConditionSource,
+    operator: CompiledConditionOperator,
+    transforms: Vec<ConditionTransform>,
+}
+
+#[derive(Debug)]
+enum ConditionSource {
+    Method,
+    Path,
+    Query,
+    Body,
+    UserAgent,
+    Header(String),
+    ClientIp,
+}
+
+#[derive(Debug)]
+enum CompiledConditionOperator {
+    Eq(String),
+    Contains(String),
+    Prefix(String),
+    Suffix(String),
+    Regex(Regex),
+    In(Vec<String>),
+    IpMatch(Vec<Cidr>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +78,10 @@ pub struct RequestMeta {
     pub client_ip: IpAddr,
     pub method: String,
     pub path: String,
+    pub query: Option<String>,
     pub user_agent: Option<String>,
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +98,7 @@ struct MatchScore {
     path_specificity: u16,
     ip_specificity: u8,
     ua_specificity: u16,
+    condition_specificity: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,6 +106,7 @@ struct MatchDetails {
     path_specificity: u16,
     ip_specificity: u8,
     ua_specificity: u16,
+    condition_specificity: u16,
 }
 
 trait RuleVm: Send + Sync + std::fmt::Debug {
@@ -239,6 +278,12 @@ impl CompiledRule {
             .map(|ua| ua.to_ascii_lowercase())
             .collect::<Vec<_>>();
 
+        let conditions = raw
+            .conditions
+            .iter()
+            .map(|cond| CompiledCondition::compile(cond, &raw.id))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
         let status_code = raw.status_code.unwrap_or(403);
         if raw.action == Action::Allow && raw.status_code.is_some() {
             bail!(
@@ -255,6 +300,7 @@ impl CompiledRule {
             path_prefixes,
             ip_cidrs,
             user_agent_contains,
+            conditions,
         })
     }
 
@@ -309,10 +355,21 @@ impl CompiledRule {
             ua_specificity = best.min(u16::MAX as usize) as u16;
         }
 
+        let mut condition_specificity: u16 = 0;
+        if !self.conditions.is_empty() {
+            for condition in &self.conditions {
+                let Some(specificity) = condition.match_specificity(req) else {
+                    return None;
+                };
+                condition_specificity = condition_specificity.saturating_add(specificity);
+            }
+        }
+
         Some(MatchDetails {
             path_specificity,
             ip_specificity,
             ua_specificity,
+            condition_specificity,
         })
     }
 
@@ -330,14 +387,288 @@ impl CompiledRule {
         if !self.user_agent_contains.is_empty() {
             matched_dimensions += 1;
         }
+        if !self.conditions.is_empty() {
+            matched_dimensions += 1;
+        }
 
         MatchScore {
             matched_dimensions,
             path_specificity: details.path_specificity,
             ip_specificity: details.ip_specificity,
             ua_specificity: details.ua_specificity,
+            condition_specificity: details.condition_specificity,
         }
     }
+}
+
+impl CompiledCondition {
+    fn compile(raw: &ConditionConfig, rule_id: &str) -> anyhow::Result<Self> {
+        let source = match &raw.target {
+            ConditionTarget::Method => ConditionSource::Method,
+            ConditionTarget::Path => ConditionSource::Path,
+            ConditionTarget::Query => ConditionSource::Query,
+            ConditionTarget::Body => ConditionSource::Body,
+            ConditionTarget::UserAgent => ConditionSource::UserAgent,
+            ConditionTarget::Header { name } => {
+                if name.trim().is_empty() {
+                    bail!("rule {}: condition header name must not be empty", rule_id);
+                }
+                ConditionSource::Header(name.to_ascii_lowercase())
+            }
+            ConditionTarget::ClientIp => ConditionSource::ClientIp,
+        };
+
+        let operator = match raw.operator {
+            ConditionOperator::Eq => {
+                let value = required_single_value(raw, rule_id, "eq")?;
+                CompiledConditionOperator::Eq(value)
+            }
+            ConditionOperator::Contains => {
+                let value = required_single_value(raw, rule_id, "contains")?;
+                CompiledConditionOperator::Contains(value)
+            }
+            ConditionOperator::Prefix => {
+                let value = required_single_value(raw, rule_id, "prefix")?;
+                CompiledConditionOperator::Prefix(value)
+            }
+            ConditionOperator::Suffix => {
+                let value = required_single_value(raw, rule_id, "suffix")?;
+                CompiledConditionOperator::Suffix(value)
+            }
+            ConditionOperator::Regex => {
+                let pattern = required_single_value(raw, rule_id, "regex")?;
+                let regex = Regex::new(&pattern)
+                    .with_context(|| format!("rule {}: invalid regex {}", rule_id, pattern))?;
+                CompiledConditionOperator::Regex(regex)
+            }
+            ConditionOperator::In => {
+                let values = required_list_values(raw, rule_id, "in")?;
+                CompiledConditionOperator::In(values)
+            }
+            ConditionOperator::IpMatch => {
+                let values = required_list_values(raw, rule_id, "ip_match")?;
+                let cidrs = values
+                    .iter()
+                    .map(|cidr| Cidr::parse(cidr).with_context(|| format!("rule {}", rule_id)))
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                CompiledConditionOperator::IpMatch(cidrs)
+            }
+        };
+
+        match (&source, &operator) {
+            (ConditionSource::ClientIp, CompiledConditionOperator::IpMatch(_)) => {}
+            (ConditionSource::ClientIp, _) => {
+                bail!(
+                    "rule {}: client_ip target only supports ip_match operator",
+                    rule_id
+                )
+            }
+            (_, CompiledConditionOperator::IpMatch(_)) => {
+                bail!(
+                    "rule {}: ip_match operator only supports client_ip target",
+                    rule_id
+                )
+            }
+            _ => {}
+        }
+
+        let transforms = normalize_transforms(&raw.transforms, rule_id)?;
+
+        Ok(Self {
+            source,
+            operator,
+            transforms,
+        })
+    }
+
+    fn match_specificity(&self, req: &RequestMeta) -> Option<u16> {
+        match (&self.source, &self.operator) {
+            (ConditionSource::ClientIp, CompiledConditionOperator::IpMatch(cidrs)) => {
+                let mut best: Option<u8> = None;
+                for cidr in cidrs {
+                    if let Some(prefix) = cidr.match_prefix(req.client_ip) {
+                        best = Some(best.map_or(prefix, |old| old.max(prefix)));
+                    }
+                }
+                best.map(u16::from)
+            }
+            _ => {
+                let candidate = self.read_source_value(req)?;
+                let transformed = self.apply_transforms(candidate);
+                match &self.operator {
+                    CompiledConditionOperator::Eq(expected) => (transformed == *expected)
+                        .then_some(expected.len().min(u16::MAX as usize) as u16),
+                    CompiledConditionOperator::Contains(needle) => transformed
+                        .contains(needle)
+                        .then_some(needle.len().min(u16::MAX as usize) as u16),
+                    CompiledConditionOperator::Prefix(prefix) => transformed
+                        .starts_with(prefix)
+                        .then_some(prefix.len().min(u16::MAX as usize) as u16),
+                    CompiledConditionOperator::Suffix(suffix) => transformed
+                        .ends_with(suffix)
+                        .then_some(suffix.len().min(u16::MAX as usize) as u16),
+                    CompiledConditionOperator::Regex(regex) => regex
+                        .find(&transformed)
+                        .map(|m| m.as_str().len().min(u16::MAX as usize) as u16),
+                    CompiledConditionOperator::In(values) => values
+                        .iter()
+                        .filter(|v| transformed == v.as_str())
+                        .map(|v| v.len().min(u16::MAX as usize) as u16)
+                        .max(),
+                    CompiledConditionOperator::IpMatch(_) => None,
+                }
+            }
+        }
+    }
+
+    fn apply_transforms(&self, input: &str) -> String {
+        let mut out = input.to_string();
+        for transform in &self.transforms {
+            match transform {
+                ConditionTransform::None => {}
+                ConditionTransform::Lowercase => out = out.to_ascii_lowercase(),
+                ConditionTransform::UrlDecode => out = url_decode(&out),
+                ConditionTransform::CompressWhitespace => {
+                    out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+                }
+                ConditionTransform::RemoveNulls => out.retain(|ch| ch != '\0'),
+            }
+        }
+        out
+    }
+
+    fn read_source_value<'a>(&self, req: &'a RequestMeta) -> Option<&'a str> {
+        match &self.source {
+            ConditionSource::Method => Some(req.method.as_str()),
+            ConditionSource::Path => Some(req.path.as_str()),
+            ConditionSource::Query => req.query.as_deref(),
+            ConditionSource::Body => req.body.as_deref(),
+            ConditionSource::UserAgent => req.user_agent.as_deref(),
+            ConditionSource::Header(name) => req.headers.get(name).map(String::as_str),
+            ConditionSource::ClientIp => None,
+        }
+    }
+}
+
+fn normalize_transforms(
+    transforms: &[ConditionTransform],
+    rule_id: &str,
+) -> anyhow::Result<Vec<ConditionTransform>> {
+    if transforms.is_empty() {
+        return Ok(Vec::new());
+    }
+    if transforms.len() > 1 && transforms.contains(&ConditionTransform::None) {
+        bail!(
+            "rule {}: transform none cannot be combined with other transforms",
+            rule_id
+        );
+    }
+
+    if transforms.contains(&ConditionTransform::None) {
+        return Ok(Vec::new());
+    }
+
+    Ok(transforms.to_vec())
+}
+
+fn url_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                if let (Some(h1), Some(h2)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                    out.push((h1 << 4) | h2);
+                    i += 3;
+                } else {
+                    out.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            _ => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(ch: u8) -> Option<u8> {
+    match ch {
+        b'0'..=b'9' => Some(ch - b'0'),
+        b'a'..=b'f' => Some(ch - b'a' + 10),
+        b'A'..=b'F' => Some(ch - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn required_single_value(
+    raw: &ConditionConfig,
+    rule_id: &str,
+    op_name: &str,
+) -> anyhow::Result<String> {
+    if !raw.values.is_empty() {
+        bail!(
+            "rule {}: operator {} requires value, not values",
+            rule_id,
+            op_name
+        );
+    }
+    let value = raw
+        .value
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("rule {}: operator {} requires value", rule_id, op_name))?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!(
+            "rule {}: operator {} value must not be empty",
+            rule_id,
+            op_name
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
+fn required_list_values(
+    raw: &ConditionConfig,
+    rule_id: &str,
+    op_name: &str,
+) -> anyhow::Result<Vec<String>> {
+    if raw.value.is_some() {
+        bail!(
+            "rule {}: operator {} requires values, not value",
+            rule_id,
+            op_name
+        );
+    }
+    if raw.values.is_empty() {
+        bail!(
+            "rule {}: operator {} requires non-empty values",
+            rule_id,
+            op_name
+        );
+    }
+    let mut out = Vec::with_capacity(raw.values.len());
+    for value in &raw.values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            bail!(
+                "rule {}: operator {} values must not contain empty entries",
+                rule_id,
+                op_name
+            );
+        }
+        out.push(trimmed.to_string());
+    }
+    Ok(out)
 }
 
 impl Cidr {
@@ -421,14 +752,24 @@ impl Cidr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Action, AppConfig, ProfileConfig, RuleConfig, SiteConfig, UpstreamConfig};
+    use crate::config::{
+        Action, AppConfig, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform,
+        ProfileConfig, RuleConfig, SiteConfig, UpstreamConfig,
+    };
 
     fn test_req(ip: IpAddr, method: &str, path: &str, ua: Option<&str>) -> RequestMeta {
+        let (path_only, query) = match path.split_once('?') {
+            Some((p, q)) => (p.to_string(), Some(q.to_string())),
+            None => (path.to_string(), None),
+        };
         RequestMeta {
             client_ip: ip,
             method: method.to_string(),
-            path: path.to_string(),
+            path: path_only,
+            query,
             user_agent: ua.map(ToString::to_string),
+            headers: std::collections::HashMap::new(),
+            body: None,
         }
     }
 
@@ -527,6 +868,7 @@ mod tests {
                     path_prefixes: vec!["/admin".to_string()],
                     ip_cidrs: vec![],
                     user_agent_contains: vec![],
+                    conditions: vec![],
                 },
                 RuleConfig {
                     id: "specific-admin".to_string(),
@@ -537,6 +879,7 @@ mod tests {
                     path_prefixes: vec!["/admin/secure".to_string()],
                     ip_cidrs: vec![],
                     user_agent_contains: vec![],
+                    conditions: vec![],
                 },
             ],
         }]);
@@ -570,6 +913,7 @@ mod tests {
                 path_prefixes: vec![],
                 ip_cidrs: vec![],
                 user_agent_contains: vec!["curl".to_string()],
+                conditions: vec![],
             }],
         }]);
         let snapshot = EngineSnapshot::from_app_config(&cfg);
@@ -586,5 +930,271 @@ mod tests {
             )
             .unwrap();
         assert_eq!(decision.action, Action::Block);
+    }
+
+    #[test]
+    fn condition_header_contains_matches() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "block-bad-header".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Header {
+                        name: "x-risk".to_string(),
+                    },
+                    operator: ConditionOperator::Contains,
+                    value: Some("bot".to_string()),
+                    values: vec![],
+                    transforms: vec![],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        let decision = engine
+            .decide(
+                "p1",
+                &RequestMeta {
+                    client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    method: "GET".to_string(),
+                    path: "/".to_string(),
+                    query: None,
+                    user_agent: None,
+                    headers: std::collections::HashMap::from([(
+                        "x-risk".to_string(),
+                        "known-bot".to_string(),
+                    )]),
+                    body: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(
+            decision.matched_rule_id.as_deref(),
+            Some("block-bad-header")
+        );
+    }
+
+    #[test]
+    fn condition_query_regex_matches() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "block-union".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Query,
+                    operator: ConditionOperator::Regex,
+                    value: Some("(?i)union\\+select".to_string()),
+                    values: vec![],
+                    transforms: vec![],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        let decision = engine
+            .decide(
+                "p1",
+                &RequestMeta {
+                    client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    method: "GET".to_string(),
+                    path: "/search".to_string(),
+                    query: Some("q=1+UNION+SELECT+2".to_string()),
+                    user_agent: None,
+                    headers: std::collections::HashMap::new(),
+                    body: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(decision.matched_rule_id.as_deref(), Some("block-union"));
+    }
+
+    #[test]
+    fn condition_body_contains_matches() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "block-body-token".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Body,
+                    operator: ConditionOperator::Contains,
+                    value: Some("drop table".to_string()),
+                    values: vec![],
+                    transforms: vec![],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        let decision = engine
+            .decide(
+                "p1",
+                &RequestMeta {
+                    client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    method: "POST".to_string(),
+                    path: "/submit".to_string(),
+                    query: None,
+                    user_agent: None,
+                    headers: std::collections::HashMap::new(),
+                    body: Some("name=x;drop table users".to_string()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(
+            decision.matched_rule_id.as_deref(),
+            Some("block-body-token")
+        );
+    }
+
+    #[test]
+    fn condition_transform_lowercase_and_url_decode_matches() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "block-union-decoded".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Query,
+                    operator: ConditionOperator::Contains,
+                    value: Some("union select".to_string()),
+                    values: vec![],
+                    transforms: vec![ConditionTransform::UrlDecode, ConditionTransform::Lowercase],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        let decision = engine
+            .decide(
+                "p1",
+                &RequestMeta {
+                    client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    method: "GET".to_string(),
+                    path: "/search".to_string(),
+                    query: Some("q=UNIOn%20SELECT%201".to_string()),
+                    user_agent: None,
+                    headers: std::collections::HashMap::new(),
+                    body: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(
+            decision.matched_rule_id.as_deref(),
+            Some("block-union-decoded")
+        );
+    }
+
+    #[test]
+    fn condition_transform_compress_whitespace_matches() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "block-spaced-pattern".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Body,
+                    operator: ConditionOperator::Contains,
+                    value: Some("select from users".to_string()),
+                    values: vec![],
+                    transforms: vec![ConditionTransform::CompressWhitespace],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        let decision = engine
+            .decide(
+                "p1",
+                &RequestMeta {
+                    client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    method: "POST".to_string(),
+                    path: "/submit".to_string(),
+                    query: None,
+                    user_agent: None,
+                    headers: std::collections::HashMap::new(),
+                    body: Some("select   from\nusers".to_string()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(decision.action, Action::Block);
+    }
+
+    #[test]
+    fn condition_transform_none_cannot_mix_with_others() {
+        let cfg = base_cfg(vec![ProfileConfig {
+            id: "p1".to_string(),
+            default_action: Action::Allow,
+            rules: vec![RuleConfig {
+                id: "bad-transform-rule".to_string(),
+                enabled: true,
+                action: Action::Block,
+                status_code: Some(403),
+                methods: vec![],
+                path_prefixes: vec![],
+                ip_cidrs: vec![],
+                user_agent_contains: vec![],
+                conditions: vec![ConditionConfig {
+                    target: ConditionTarget::Path,
+                    operator: ConditionOperator::Contains,
+                    value: Some("admin".to_string()),
+                    values: vec![],
+                    transforms: vec![ConditionTransform::None, ConditionTransform::Lowercase],
+                }],
+            }],
+        }]);
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        assert!(WafEngine::from_snapshot(snapshot).is_err());
     }
 }

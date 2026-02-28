@@ -73,6 +73,76 @@ pub struct RuleConfig {
     pub ip_cidrs: Vec<String>,
     #[serde(default)]
     pub user_agent_contains: Vec<String>,
+    #[serde(default)]
+    pub conditions: Vec<ConditionConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
+pub struct ConditionConfig {
+    pub target: ConditionTarget,
+    pub operator: ConditionOperator,
+    #[serde(default)]
+    pub value: Option<String>,
+    #[serde(default)]
+    pub values: Vec<String>,
+    #[serde(default)]
+    pub transforms: Vec<ConditionTransform>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ConditionTarget {
+    Method,
+    Path,
+    Query,
+    Body,
+    UserAgent,
+    Header { name: String },
+    ClientIp,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Deserialize,
+    Serialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    PartialEq,
+    Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionOperator {
+    Eq,
+    Contains,
+    Prefix,
+    Suffix,
+    Regex,
+    In,
+    IpMatch,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Deserialize,
+    Serialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    PartialEq,
+    Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionTransform {
+    None,
+    Lowercase,
+    UrlDecode,
+    CompressWhitespace,
+    RemoveNulls,
 }
 
 fn default_enabled() -> bool {

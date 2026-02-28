@@ -488,6 +488,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "pingora",
+ "regex",
  "rkyv",
  "serde",
  "serde_yaml",

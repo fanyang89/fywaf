@@ -21,6 +21,18 @@ profiles:
         status_code: 403
         user_agent_contains: ["sqlmap", "nmap"]
 
+      - id: "block-risk-header"
+        enabled: true
+        action: "block"
+        status_code: 403
+        conditions:
+          - target:
+              kind: "header"
+              name: "x-risk"
+            operator: "contains"
+            value: "bot"
+            transforms: ["lowercase"]
+
   - id: "strict"
     default_action: "block"
     rules:

@@ -134,6 +134,7 @@ mod tests {
                     path_prefixes: vec!["/admin".to_string()],
                     ip_cidrs: vec![],
                     user_agent_contains: vec!["curl".to_string()],
+                    conditions: vec![],
                 }],
             }],
             engine: EngineConfig {

@@ -155,14 +155,21 @@ async fn handle_connection(
     let client_ip = peer.ip();
     let request = read_http_request(&mut client).await?;
     let ua = request.headers.get("user-agent").cloned();
+    let (path, query) = split_path_and_query(&request.path);
+    let body = std::str::from_utf8(&request.body)
+        .ok()
+        .map(ToString::to_string);
 
     let decision = engine.decide(
         &site.profile_id,
         &RequestMeta {
             client_ip,
             method: request.method.clone(),
-            path: request.path.clone(),
+            path,
+            query,
             user_agent: ua.clone(),
+            headers: request.headers.clone(),
+            body,
         },
     )?;
 
@@ -419,6 +426,13 @@ fn find_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
+fn split_path_and_query(raw_path: &str) -> (String, Option<String>) {
+    match raw_path.split_once('?') {
+        Some((path, query)) => (path.to_string(), Some(query.to_string())),
+        None => (raw_path.to_string(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +456,14 @@ mod tests {
     fn header_end_detected() {
         let data = b"GET / HTTP/1.1\r\nHost: x\r\n\r\nbody";
         assert_eq!(find_header_end(data), Some(23));
+    }
+
+    #[test]
+    fn split_path_query() {
+        assert_eq!(
+            split_path_and_query("/a?b=1"),
+            ("/a".to_string(), Some("b=1".to_string()))
+        );
+        assert_eq!(split_path_and_query("/a"), ("/a".to_string(), None));
     }
 }

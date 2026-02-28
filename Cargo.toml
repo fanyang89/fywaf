@@ -9,6 +9,7 @@ clap = { version = "4.5.48", features = ["derive"] }
 crc32fast = "1.4.2"
 pingora = "0.7.0"
 rkyv = { version = "0.8.11", features = ["std", "bytecheck"] }
+regex = "1.12.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
 tokio = "1.49.0"
