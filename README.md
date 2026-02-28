@@ -27,6 +27,7 @@ python3 -m http.server 9001
 2. Start fywaf:
 
 ```bash
+cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules.snapshot.bin
 cargo run -- --config examples/config.yml
 ```
 
@@ -47,6 +48,7 @@ See [`examples/config.yml`](examples/config.yml).
 - No TLS termination
 - `site` is matched by listen port
 - Config reload requires restart
+- `engine.snapshot_path` must point to a binary snapshot (`.bin`) built by `fywaf-build`
 - Chunked request bodies are not supported in this MVP
 - Upstream only supports `http://...`
 

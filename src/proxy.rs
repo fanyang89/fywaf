@@ -51,9 +51,7 @@ pub async fn run(config: AppConfig, engine: Arc<WafEngine>) -> anyhow::Result<()
         );
 
         let engine = Arc::clone(&engine);
-        listeners.spawn(async move {
-            accept_loop(listener, site, engine).await
-        });
+        listeners.spawn(async move { accept_loop(listener, site, engine).await });
     }
 
     while let Some(result) = listeners.join_next().await {
@@ -355,7 +353,9 @@ fn build_upstream_request(
 ) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(request.body.len() + 1024);
     let path = merge_upstream_path(&upstream.base_path, &request.path);
-    out.extend_from_slice(format!("{} {} {}\r\n", request.method, path, request.version).as_bytes());
+    out.extend_from_slice(
+        format!("{} {} {}\r\n", request.method, path, request.version).as_bytes(),
+    );
     out.extend_from_slice(format!("Host: {}\r\n", upstream.authority()).as_bytes());
 
     for (k, v) in &request.headers {

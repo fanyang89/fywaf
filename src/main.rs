@@ -1,6 +1,7 @@
 mod config;
 mod engine;
 mod proxy;
+mod snapshot;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use anyhow::Context;
 use clap::Parser;
 use config::AppConfig;
 use engine::WafEngine;
+use snapshot::EngineSnapshot;
 use tracing::info;
 
 #[derive(Parser, Debug)]
@@ -29,9 +31,12 @@ async fn main() -> anyhow::Result<()> {
     app_config.validate()?;
 
     let engine = Arc::new(WafEngine::from_config(&app_config)?);
+    let snapshot_path = app_config.engine.snapshot_path.clone();
     info!(
         sites = app_config.sites.len(),
         profiles = app_config.profiles.len(),
+        snapshot_version = EngineSnapshot::version(),
+        snapshot_path = snapshot_path.as_deref().unwrap_or("-"),
         "starting fywaf",
     );
 

@@ -3,12 +3,15 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use serde::Deserialize;
+use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub sites: Vec<SiteConfig>,
     pub profiles: Vec<ProfileConfig>,
+    #[serde(default)]
+    pub engine: EngineConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -24,6 +27,11 @@ pub struct UpstreamConfig {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EngineConfig {
+    pub snapshot_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileConfig {
     pub id: String,
@@ -32,14 +40,25 @@ pub struct ProfileConfig {
     pub rules: Vec<RuleConfig>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Deserialize,
+    Serialize,
+    Archive,
+    RkyvSerialize,
+    RkyvDeserialize,
+    PartialEq,
+    Eq,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Allow,
     Block,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
 pub struct RuleConfig {
     pub id: String,
     #[serde(default = "default_enabled")]
@@ -75,6 +94,16 @@ impl AppConfig {
         }
         if self.profiles.is_empty() {
             bail!("profiles must not be empty");
+        }
+        if let Some(path) = &self.engine.snapshot_path {
+            if path.trim().is_empty() {
+                bail!("engine.snapshot_path must not be empty when configured");
+            }
+            if !path.ends_with(".bin") {
+                bail!("engine.snapshot_path must point to a .bin snapshot");
+            }
+        } else {
+            bail!("engine.snapshot_path is required and must point to a .bin snapshot");
         }
 
         let mut profile_ids = HashSet::new();
@@ -173,6 +202,9 @@ mod tests {
                 default_action: Action::Allow,
                 rules: vec![],
             }],
+            engine: EngineConfig {
+                snapshot_path: Some("examples/rules.snapshot.bin".to_string()),
+            },
         }
     }
 
