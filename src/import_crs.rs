@@ -1,30 +1,21 @@
-#[path = "../config.rs"]
-#[allow(dead_code)]
-mod config;
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context};
-use clap::Parser;
-use config::{Action, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform};
+use anyhow::{Context, bail};
 use serde::Serialize;
 
-#[derive(Parser, Debug)]
-#[command(name = "fywaf-import-crs")]
-#[command(about = "Import CRS-style SecRule files into fywaf profile YAML")]
-struct Args {
-    #[arg(long, short)]
-    rules_dir: PathBuf,
-    #[arg(long, short, default_value = "examples/crs.import.yml")]
-    out: PathBuf,
-    #[arg(long, default_value = "crs-imported")]
-    profile_id: String,
-    #[arg(long, default_value = "allow")]
-    default_action: String,
-    #[arg(long, default_value = "examples/crs.import.report.txt")]
-    report_out: PathBuf,
+use crate::config::{
+    Action, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform,
+};
+
+#[derive(Debug, Clone)]
+pub struct ImportCrsOptions {
+    pub rules_dir: PathBuf,
+    pub out: PathBuf,
+    pub profile_id: String,
+    pub default_action: String,
+    pub report_out: PathBuf,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,12 +72,11 @@ struct ParsedSecRule {
     transforms: Vec<ConditionTransform>,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    let default_action = parse_default_action(&args.default_action)?;
+pub fn run(options: ImportCrsOptions) -> anyhow::Result<()> {
+    let default_action = parse_default_action(&options.default_action)?;
 
     let mut files = Vec::new();
-    collect_conf_files(&args.rules_dir, &mut files)?;
+    collect_conf_files(&options.rules_dir, &mut files)?;
     files.sort();
 
     let mut imported_rules = Vec::new();
@@ -100,22 +90,22 @@ fn main() -> anyhow::Result<()> {
 
     let output = ImportOutput {
         profiles: vec![ImportedProfile {
-            id: args.profile_id,
+            id: options.profile_id,
             default_action,
             rules: imported_rules,
         }],
     };
 
     let yaml = serde_yaml::to_string(&output).context("failed to render import YAML")?;
-    fs::write(&args.out, yaml)
-        .with_context(|| format!("failed to write import output {}", args.out.display()))?;
+    fs::write(&options.out, yaml)
+        .with_context(|| format!("failed to write import output {}", options.out.display()))?;
 
     let report = render_report(&files, &parse_results);
-    fs::write(&args.report_out, report)
-        .with_context(|| format!("failed to write report {}", args.report_out.display()))?;
+    fs::write(&options.report_out, report)
+        .with_context(|| format!("failed to write report {}", options.report_out.display()))?;
 
-    println!("imported profile written to {}", args.out.display());
-    println!("report written to {}", args.report_out.display());
+    println!("imported profile written to {}", options.out.display());
+    println!("report written to {}", options.report_out.display());
     Ok(())
 }
 
@@ -318,8 +308,7 @@ fn map_rule(parsed: &ParsedSecRule, base_dir: Option<&Path>) -> anyhow::Result<V
     }
 
     let target = map_target(&parsed.target)?;
-    let rules = map_generic_condition(parsed, target, operator, operand, base_dir)?;
-    Ok(rules)
+    map_generic_condition(parsed, target, operator, operand, base_dir)
 }
 
 fn parse_operator(raw: &str) -> anyhow::Result<(&str, Option<&str>)> {

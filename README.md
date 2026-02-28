@@ -29,7 +29,7 @@ python3 -m http.server 9001
 
 ```bash
 cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules.snapshot.bin
-cargo run -- --config examples/config.yml
+cargo run -- run --config examples/config.yml
 ```
 
 3. Send request through fywaf:
@@ -70,7 +70,7 @@ cargo run --bin fywaf-compat -- --rules-dir /path/to/coreruleset/rules
 CRS import command (v1 subset):
 
 ```bash
-cargo run --bin fywaf-import-crs -- --rules-dir /path/to/coreruleset/rules --out examples/crs.import.yml --report-out examples/crs.import.report.txt
+cargo run -- convert --rules-dir /path/to/coreruleset/rules --out examples/crs.import.yml --report-out examples/crs.import.report.txt
 ```
 
 Then build the snapshot and point `engine.snapshot_path` to the `.bin` output:
