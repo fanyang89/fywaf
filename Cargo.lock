@@ -456,7 +456,10 @@ name = "fywaf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "pingora",
+ "serde",
+ "serde_yaml",
  "tokio",
  "tracing",
  "tracing-subscriber",
