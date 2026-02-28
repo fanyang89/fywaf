@@ -1,17 +1,32 @@
-server:
-  listen: "0.0.0.0:8080"
+sites:
+  - id: "blog"
+    listen: "0.0.0.0:8080"
+    upstream:
+      url: "http://127.0.0.1:9000"
+    profile: "public"
 
-upstream:
-  url: "http://127.0.0.1:9000"
+  - id: "admin"
+    listen: "0.0.0.0:8081"
+    upstream:
+      url: "http://127.0.0.1:9001"
+    profile: "strict"
 
-waf:
-  default_action: "allow"
-  rules:
-    - id: "block-admin-scan"
-      enabled: true
-      action: "block"
-      status_code: 403
-      methods: ["GET", "POST"]
-      path_prefixes: ["/admin"]
-      ip_cidrs: ["10.0.0.0/8"]
-      user_agent_contains: ["sqlmap", "nmap"]
+profiles:
+  - id: "public"
+    default_action: "allow"
+    rules:
+      - id: "block-scanner-ua"
+        enabled: true
+        action: "block"
+        status_code: 403
+        user_agent_contains: ["sqlmap", "nmap"]
+
+  - id: "strict"
+    default_action: "block"
+    rules:
+      - id: "allow-office-admin"
+        enabled: true
+        action: "allow"
+        methods: ["GET", "POST"]
+        path_prefixes: ["/admin"]
+        ip_cidrs: ["10.0.0.0/8"]

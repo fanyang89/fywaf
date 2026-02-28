@@ -7,6 +7,7 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::config::{Action, AppConfig};
@@ -15,20 +16,68 @@ use crate::engine::{RequestMeta, WafEngine};
 const MAX_HEADER_SIZE: usize = 64 * 1024;
 const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
 
+#[derive(Debug, Clone)]
+struct SiteRuntime {
+    id: String,
+    listen: String,
+    profile_id: String,
+    upstream: Arc<Upstream>,
+}
+
 pub async fn run(config: AppConfig, engine: Arc<WafEngine>) -> anyhow::Result<()> {
-    let upstream = Arc::new(Upstream::parse(&config.upstream.url)?);
-    let listener = TcpListener::bind(&config.server.listen)
-        .await
-        .with_context(|| format!("failed to bind {}", config.server.listen))?;
+    let mut sites = Vec::with_capacity(config.sites.len());
+    for site in config.sites {
+        let upstream = Arc::new(Upstream::parse(&site.upstream.url)?);
+        sites.push(SiteRuntime {
+            id: site.id,
+            listen: site.listen,
+            profile_id: site.profile,
+            upstream,
+        });
+    }
 
-    info!(listen = %config.server.listen, "listening");
+    let mut listeners = JoinSet::new();
+    for site in sites {
+        let site = Arc::new(site);
+        let listener = TcpListener::bind(&site.listen)
+            .await
+            .with_context(|| format!("failed to bind {}", site.listen))?;
+        info!(
+            site_id = %site.id,
+            listen = %site.listen,
+            profile_id = %site.profile_id,
+            upstream = %site.upstream.authority(),
+            "site listener started",
+        );
 
+        let engine = Arc::clone(&engine);
+        listeners.spawn(async move {
+            accept_loop(listener, site, engine).await
+        });
+    }
+
+    while let Some(result) = listeners.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err),
+            Err(join_err) => return Err(anyhow::anyhow!("listener task failed: {}", join_err)),
+        }
+    }
+
+    bail!("all listeners stopped unexpectedly")
+}
+
+async fn accept_loop(
+    listener: TcpListener,
+    site: Arc<SiteRuntime>,
+    engine: Arc<WafEngine>,
+) -> anyhow::Result<()> {
     loop {
         let (socket, peer) = listener.accept().await.context("accept failed")?;
+        let site = Arc::clone(&site);
         let engine = Arc::clone(&engine);
-        let upstream = Arc::clone(&upstream);
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(socket, peer, engine, upstream).await {
+            if let Err(err) = handle_connection(socket, peer, site, engine).await {
                 warn!(client = %peer, error = %err, "connection failed");
             }
         });
@@ -101,23 +150,29 @@ impl Upstream {
 async fn handle_connection(
     mut client: TcpStream,
     peer: SocketAddr,
+    site: Arc<SiteRuntime>,
     engine: Arc<WafEngine>,
-    upstream: Arc<Upstream>,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let client_ip = peer.ip();
     let request = read_http_request(&mut client).await?;
     let ua = request.headers.get("user-agent").cloned();
-    let decision = engine.decide(&RequestMeta {
-        client_ip,
-        method: request.method.clone(),
-        path: request.path.clone(),
-        user_agent: ua.clone(),
-    });
+
+    let decision = engine.decide(
+        &site.profile_id,
+        &RequestMeta {
+            client_ip,
+            method: request.method.clone(),
+            path: request.path.clone(),
+            user_agent: ua.clone(),
+        },
+    )?;
 
     if decision.action == Action::Block {
         write_blocked_response(&mut client, decision.status_code).await?;
         info!(
+            site_id = %site.id,
+            profile_id = %decision.profile_id,
             client_ip = %client_ip,
             method = %request.method,
             path = %request.path,
@@ -130,11 +185,11 @@ async fn handle_connection(
         return Ok(());
     }
 
-    let mut upstream_stream = TcpStream::connect((upstream.host.as_str(), upstream.port))
+    let mut upstream_stream = TcpStream::connect((site.upstream.host.as_str(), site.upstream.port))
         .await
         .context("failed to connect to upstream")?;
 
-    let upstream_request = build_upstream_request(&request, &upstream, client_ip)?;
+    let upstream_request = build_upstream_request(&request, &site.upstream, client_ip)?;
     upstream_stream
         .write_all(&upstream_request)
         .await
@@ -149,13 +204,15 @@ async fn handle_connection(
         .context("failed to relay upstream response")?;
 
     info!(
+        site_id = %site.id,
+        profile_id = %decision.profile_id,
         client_ip = %client_ip,
         method = %request.method,
         path = %request.path,
         status = 200u16,
         waf_action = "allow",
         matched_rule_id = decision.matched_rule_id.as_deref().unwrap_or("-"),
-        upstream = %upstream.authority(),
+        upstream = %site.upstream.authority(),
         response_bytes = copied,
         latency_ms = started.elapsed().as_millis() as u64,
         "request forwarded",

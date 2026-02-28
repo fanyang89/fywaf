@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -7,14 +7,16 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
-    pub server: ServerConfig,
-    pub upstream: UpstreamConfig,
-    pub waf: WafConfig,
+    pub sites: Vec<SiteConfig>,
+    pub profiles: Vec<ProfileConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServerConfig {
+pub struct SiteConfig {
+    pub id: String,
     pub listen: String,
+    pub upstream: UpstreamConfig,
+    pub profile: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -23,7 +25,8 @@ pub struct UpstreamConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct WafConfig {
+pub struct ProfileConfig {
+    pub id: String,
     pub default_action: Action,
     #[serde(default)]
     pub rules: Vec<RuleConfig>,
@@ -67,31 +70,136 @@ impl AppConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.server.listen.trim().is_empty() {
-            bail!("server.listen must not be empty");
+        if self.sites.is_empty() {
+            bail!("sites must not be empty");
         }
-        if self.upstream.url.trim().is_empty() {
-            bail!("upstream.url must not be empty");
-        }
-        if !self.upstream.url.starts_with("http://") {
-            bail!("upstream.url must start with http:// for MVP");
+        if self.profiles.is_empty() {
+            bail!("profiles must not be empty");
         }
 
-        let mut ids = HashSet::new();
-        for rule in &self.waf.rules {
-            if rule.id.trim().is_empty() {
-                bail!("rule.id must not be empty");
+        let mut profile_ids = HashSet::new();
+        for profile in &self.profiles {
+            if profile.id.trim().is_empty() {
+                bail!("profile.id must not be empty");
             }
-            if !ids.insert(rule.id.clone()) {
-                bail!("duplicate rule.id found: {}", rule.id);
+            if !profile_ids.insert(profile.id.clone()) {
+                bail!("duplicate profile.id found: {}", profile.id);
             }
-            if let Some(status) = rule.status_code {
-                if !(100..=599).contains(&status) {
-                    bail!("rule {} has invalid status_code {}", rule.id, status);
+
+            let mut rule_ids = HashSet::new();
+            for rule in &profile.rules {
+                if rule.id.trim().is_empty() {
+                    bail!("rule.id must not be empty in profile {}", profile.id);
+                }
+                if !rule_ids.insert(rule.id.clone()) {
+                    bail!(
+                        "duplicate rule.id found in profile {}: {}",
+                        profile.id,
+                        rule.id
+                    );
+                }
+                if let Some(status) = rule.status_code {
+                    if !(100..=599).contains(&status) {
+                        bail!(
+                            "profile {} rule {} has invalid status_code {}",
+                            profile.id,
+                            rule.id,
+                            status
+                        );
+                    }
                 }
             }
         }
 
+        let profile_lookup: HashMap<&str, ()> = self
+            .profiles
+            .iter()
+            .map(|profile| (profile.id.as_str(), ()))
+            .collect();
+
+        let mut site_ids = HashSet::new();
+        let mut listen_addrs = HashSet::new();
+        for site in &self.sites {
+            if site.id.trim().is_empty() {
+                bail!("site.id must not be empty");
+            }
+            if !site_ids.insert(site.id.clone()) {
+                bail!("duplicate site.id found: {}", site.id);
+            }
+            if site.listen.trim().is_empty() {
+                bail!("site {} listen must not be empty", site.id);
+            }
+            if !listen_addrs.insert(site.listen.clone()) {
+                bail!("duplicate site.listen found: {}", site.listen);
+            }
+            if site.upstream.url.trim().is_empty() {
+                bail!("site {} upstream.url must not be empty", site.id);
+            }
+            if !site.upstream.url.starts_with("http://") {
+                bail!(
+                    "site {} upstream.url must start with http:// for MVP",
+                    site.id
+                );
+            }
+            if !profile_lookup.contains_key(site.profile.as_str()) {
+                bail!(
+                    "site {} references missing profile {}",
+                    site.id,
+                    site.profile
+                );
+            }
+        }
+
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> AppConfig {
+        AppConfig {
+            sites: vec![SiteConfig {
+                id: "site-a".to_string(),
+                listen: "127.0.0.1:8080".to_string(),
+                upstream: UpstreamConfig {
+                    url: "http://127.0.0.1:9000".to_string(),
+                },
+                profile: "public".to_string(),
+            }],
+            profiles: vec![ProfileConfig {
+                id: "public".to_string(),
+                default_action: Action::Allow,
+                rules: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn validate_ok() {
+        let cfg = valid_config();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_fails_missing_profile_reference() {
+        let mut cfg = valid_config();
+        cfg.sites[0].profile = "missing".to_string();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_fails_duplicate_listen() {
+        let mut cfg = valid_config();
+        cfg.sites.push(SiteConfig {
+            id: "site-b".to_string(),
+            listen: "127.0.0.1:8080".to_string(),
+            upstream: UpstreamConfig {
+                url: "http://127.0.0.1:9001".to_string(),
+            },
+            profile: "public".to_string(),
+        });
+        assert!(cfg.validate().is_err());
     }
 }

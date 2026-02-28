@@ -28,11 +28,10 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("failed to load config file {}", args.config.display()))?;
     app_config.validate()?;
 
-    let engine = Arc::new(WafEngine::from_config(&app_config.waf)?);
+    let engine = Arc::new(WafEngine::from_config(&app_config)?);
     info!(
-        listen = %app_config.server.listen,
-        upstream = %app_config.upstream.url,
-        rules = app_config.waf.rules.len(),
+        sites = app_config.sites.len(),
+        profiles = app_config.profiles.len(),
         "starting fywaf",
     );
 

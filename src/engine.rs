@@ -1,11 +1,17 @@
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Context, bail};
 
-use crate::config::{Action, RuleConfig, WafConfig};
+use crate::config::{Action, AppConfig, ProfileConfig, RuleConfig};
 
 #[derive(Debug)]
 pub struct WafEngine {
+    profiles: HashMap<String, CompiledProfile>,
+}
+
+#[derive(Debug)]
+struct CompiledProfile {
     default_action: Action,
     rules: Vec<CompiledRule>,
 }
@@ -37,51 +43,67 @@ pub struct RequestMeta {
 
 #[derive(Debug, Clone)]
 pub struct Decision {
+    pub profile_id: String,
     pub action: Action,
     pub status_code: u16,
     pub matched_rule_id: Option<String>,
 }
 
 impl WafEngine {
-    pub fn from_config(cfg: &WafConfig) -> anyhow::Result<Self> {
-        let mut rules = Vec::new();
-
-        for raw in &cfg.rules {
-            if !raw.enabled {
-                continue;
-            }
-            rules.push(CompiledRule::compile(raw)?);
+    pub fn from_config(cfg: &AppConfig) -> anyhow::Result<Self> {
+        let mut profiles = HashMap::new();
+        for profile in &cfg.profiles {
+            let compiled = CompiledProfile::compile(profile)?;
+            profiles.insert(profile.id.clone(), compiled);
         }
-
-        Ok(Self {
-            default_action: cfg.default_action,
-            rules,
-        })
+        Ok(Self { profiles })
     }
 
-    pub fn decide(&self, req: &RequestMeta) -> Decision {
-        for rule in &self.rules {
+    pub fn decide(&self, profile_id: &str, req: &RequestMeta) -> anyhow::Result<Decision> {
+        let profile = self
+            .profiles
+            .get(profile_id)
+            .ok_or_else(|| anyhow::anyhow!("profile not found: {}", profile_id))?;
+
+        for rule in &profile.rules {
             if rule.matches(req) {
-                return Decision {
+                return Ok(Decision {
+                    profile_id: profile_id.to_string(),
                     action: rule.action,
                     status_code: rule.status_code,
                     matched_rule_id: Some(rule.id.clone()),
-                };
+                });
             }
         }
 
-        match self.default_action {
-            Action::Allow => Decision {
-                action: Action::Allow,
-                status_code: 200,
-                matched_rule_id: None,
-            },
-            Action::Block => Decision {
-                action: Action::Block,
-                status_code: 403,
-                matched_rule_id: None,
-            },
+        let (action, status_code) = match profile.default_action {
+            Action::Allow => (Action::Allow, 200),
+            Action::Block => (Action::Block, 403),
+        };
+        Ok(Decision {
+            profile_id: profile_id.to_string(),
+            action,
+            status_code,
+            matched_rule_id: None,
+        })
+    }
+}
+
+impl CompiledProfile {
+    fn compile(raw: &ProfileConfig) -> anyhow::Result<Self> {
+        let mut rules = Vec::new();
+        for rule in &raw.rules {
+            if !rule.enabled {
+                continue;
+            }
+            rules.push(CompiledRule::compile(rule).with_context(|| {
+                format!("failed to compile rule {} in profile {}", rule.id, raw.id)
+            })?);
         }
+        Ok(Self {
+            default_action: raw.default_action,
+            rules,
+        })
     }
 }
 
@@ -233,7 +255,7 @@ impl Cidr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Action, RuleConfig, WafConfig};
+    use crate::config::{Action, AppConfig, ProfileConfig, RuleConfig, SiteConfig, UpstreamConfig};
 
     fn test_req(ip: IpAddr, method: &str, path: &str, ua: Option<&str>) -> RequestMeta {
         RequestMeta {
@@ -263,11 +285,63 @@ mod tests {
     }
 
     #[test]
-    fn match_first_rule() {
-        let cfg = WafConfig {
-            default_action: Action::Allow,
-            rules: vec![
-                RuleConfig {
+    fn profile_specific_decision() {
+        let cfg = AppConfig {
+            sites: vec![SiteConfig {
+                id: "s1".to_string(),
+                listen: "127.0.0.1:8080".to_string(),
+                upstream: UpstreamConfig {
+                    url: "http://127.0.0.1:9000".to_string(),
+                },
+                profile: "public".to_string(),
+            }],
+            profiles: vec![
+                ProfileConfig {
+                    id: "public".to_string(),
+                    default_action: Action::Allow,
+                    rules: vec![],
+                },
+                ProfileConfig {
+                    id: "strict".to_string(),
+                    default_action: Action::Block,
+                    rules: vec![],
+                },
+            ],
+        };
+        let engine = WafEngine::from_config(&cfg).unwrap();
+
+        let public = engine
+            .decide(
+                "public",
+                &test_req(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), "GET", "/", None),
+            )
+            .unwrap();
+        assert_eq!(public.action, Action::Allow);
+
+        let strict = engine
+            .decide(
+                "strict",
+                &test_req(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), "GET", "/", None),
+            )
+            .unwrap();
+        assert_eq!(strict.action, Action::Block);
+    }
+
+    #[test]
+    fn match_rule_in_profile() {
+        let cfg = AppConfig {
+            sites: vec![SiteConfig {
+                id: "admin".to_string(),
+                listen: "127.0.0.1:8081".to_string(),
+                upstream: UpstreamConfig {
+                    url: "http://127.0.0.1:9001".to_string(),
+                },
+                profile: "admin-profile".to_string(),
+            }],
+            profiles: vec![ProfileConfig {
+                id: "admin-profile".to_string(),
+                default_action: Action::Allow,
+                rules: vec![RuleConfig {
                     id: "block-admin".to_string(),
                     enabled: true,
                     action: Action::Block,
@@ -276,56 +350,24 @@ mod tests {
                     path_prefixes: vec!["/admin".to_string()],
                     ip_cidrs: vec![],
                     user_agent_contains: vec![],
-                },
-                RuleConfig {
-                    id: "allow-all".to_string(),
-                    enabled: true,
-                    action: Action::Allow,
-                    status_code: None,
-                    methods: vec![],
-                    path_prefixes: vec![],
-                    ip_cidrs: vec![],
-                    user_agent_contains: vec![],
-                },
-            ],
-        };
-
-        let engine = WafEngine::from_config(&cfg).unwrap();
-        let decision = engine.decide(&test_req(
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            "GET",
-            "/admin/dashboard",
-            Some("curl"),
-        ));
-        assert_eq!(decision.action, Action::Block);
-        assert_eq!(decision.status_code, 403);
-        assert_eq!(decision.matched_rule_id.as_deref(), Some("block-admin"));
-    }
-
-    #[test]
-    fn default_allow_when_no_match() {
-        let cfg = WafConfig {
-            default_action: Action::Allow,
-            rules: vec![RuleConfig {
-                id: "only-post".to_string(),
-                enabled: true,
-                action: Action::Block,
-                status_code: Some(403),
-                methods: vec!["POST".to_string()],
-                path_prefixes: vec!["/admin".to_string()],
-                ip_cidrs: vec![],
-                user_agent_contains: vec![],
+                }],
             }],
         };
 
         let engine = WafEngine::from_config(&cfg).unwrap();
-        let decision = engine.decide(&test_req(
-            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
-            "GET",
-            "/",
-            None,
-        ));
-        assert_eq!(decision.action, Action::Allow);
-        assert!(decision.matched_rule_id.is_none());
+        let decision = engine
+            .decide(
+                "admin-profile",
+                &test_req(
+                    IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                    "GET",
+                    "/admin/dashboard",
+                    Some("curl"),
+                ),
+            )
+            .unwrap();
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(decision.status_code, 403);
+        assert_eq!(decision.matched_rule_id.as_deref(), Some("block-admin"));
     }
 }
