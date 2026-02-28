@@ -1,0 +1,54 @@
+name: Convert CRS Rules
+
+on:
+  workflow_dispatch:
+    inputs:
+      crs_ref:
+        description: "CRS git ref (branch/tag/sha)"
+        required: false
+        default: "main"
+      profile_id:
+        description: "Output profile id"
+        required: false
+        default: "crs-imported"
+      default_action:
+        description: "Profile default action (allow|block)"
+        required: false
+        default: "allow"
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fywaf repository
+        uses: actions/checkout@v4
+
+      - name: Checkout OWASP CRS repository
+        uses: actions/checkout@v4
+        with:
+          repository: coreruleset/coreruleset
+          ref: ${{ github.event.inputs.crs_ref }}
+          path: coreruleset
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo files
+        uses: Swatinem/rust-cache@v2
+
+      - name: Convert CRS rules
+        run: |
+          mkdir -p artifacts
+          cargo run --locked -- convert \
+            --rules-dir coreruleset/rules \
+            --out artifacts/crs.import.yml \
+            --report-out artifacts/crs.import.report.txt \
+            --profile-id "${{ github.event.inputs.profile_id }}" \
+            --default-action "${{ github.event.inputs.default_action }}"
+
+      - name: Upload converted artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crs-conversion-${{ github.run_number }}
+          path: artifacts/
+          if-no-files-found: error

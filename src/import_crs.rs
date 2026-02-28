@@ -675,7 +675,16 @@ fn render_report(files: &[PathBuf], results: &[ParseResult]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+    use crate::config::{
+        AppConfig, EngineConfig, ProfileConfig, RuleConfig, SiteConfig, UpstreamConfig,
+    };
+    use crate::engine::{RequestMeta, WafEngine};
+    use crate::snapshot::EngineSnapshot;
 
     #[test]
     fn split_actions_keeps_quoted_commas() {
@@ -705,5 +714,119 @@ mod tests {
         let mapped = map_rule(&parsed, None).unwrap();
         assert_eq!(mapped.len(), 1);
         assert_eq!(mapped[0].user_agent_contains, vec!["sqlmap", "nmap"]);
+
+        let decision = decide_with_mapped_rule(
+            &mapped[0],
+            RequestMeta {
+                client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                query: None,
+                user_agent: Some("sqlmap/1.0".to_string()),
+                headers: HashMap::new(),
+                body: None,
+            },
+        );
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(decision.matched_rule_id.as_deref(), Some("crs-913100"));
+    }
+
+    #[test]
+    fn map_pm_from_file_works() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "fywaf-import-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock before epoch")
+                .as_nanos()
+        ));
+        let rules_dir = temp_root.join("rules");
+        let data_dir = temp_root.join("data");
+        fs::create_dir_all(&rules_dir).unwrap();
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("scanner.data"), "# comment\nsqlmap\n\nnmap\n").unwrap();
+
+        let parsed = ParsedSecRule {
+            target: "REQUEST_HEADERS:User-Agent".to_string(),
+            operator: "@pmFromFile scanner.data".to_string(),
+            actions_raw: "id:913101,block".to_string(),
+            action: Action::Block,
+            status_code: Some(403),
+            rule_id: "913101".to_string(),
+            transforms: vec![],
+        };
+
+        let mapped = map_rule(&parsed, Some(&rules_dir)).unwrap();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].user_agent_contains, vec!["sqlmap", "nmap"]);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn map_regex_condition_effective() {
+        let parsed = ParsedSecRule {
+            target: "QUERY_STRING".to_string(),
+            operator: "@rx (?i)union\\+select".to_string(),
+            actions_raw: "id:942100,block,t:none".to_string(),
+            action: Action::Block,
+            status_code: Some(403),
+            rule_id: "942100".to_string(),
+            transforms: vec![ConditionTransform::None],
+        };
+
+        let mapped = map_rule(&parsed, None).unwrap();
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].conditions.len(), 1);
+
+        let decision = decide_with_mapped_rule(
+            &mapped[0],
+            RequestMeta {
+                client_ip: IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+                method: "GET".to_string(),
+                path: "/search".to_string(),
+                query: Some("q=1+UNION+SELECT+2".to_string()),
+                user_agent: None,
+                headers: HashMap::new(),
+                body: None,
+            },
+        );
+        assert_eq!(decision.action, Action::Block);
+        assert_eq!(decision.matched_rule_id.as_deref(), Some("crs-942100"));
+    }
+
+    fn decide_with_mapped_rule(rule: &ImportedRule, req: RequestMeta) -> crate::engine::Decision {
+        let cfg = AppConfig {
+            sites: vec![SiteConfig {
+                id: "s1".to_string(),
+                listen: "127.0.0.1:8080".to_string(),
+                upstream: UpstreamConfig {
+                    url: "http://127.0.0.1:9000".to_string(),
+                },
+                profile: "p1".to_string(),
+            }],
+            profiles: vec![ProfileConfig {
+                id: "p1".to_string(),
+                default_action: Action::Allow,
+                rules: vec![RuleConfig {
+                    id: rule.id.clone(),
+                    enabled: rule.enabled,
+                    action: rule.action,
+                    status_code: rule.status_code,
+                    methods: rule.methods.clone(),
+                    path_prefixes: rule.path_prefixes.clone(),
+                    ip_cidrs: rule.ip_cidrs.clone(),
+                    user_agent_contains: rule.user_agent_contains.clone(),
+                    conditions: rule.conditions.clone(),
+                }],
+            }],
+            engine: EngineConfig {
+                snapshot_path: Some("examples/rules.snapshot.bin".to_string()),
+            },
+        };
+
+        let snapshot = EngineSnapshot::from_app_config(&cfg);
+        let engine = WafEngine::from_snapshot(snapshot).unwrap();
+        engine.decide("p1", &req).unwrap()
     }
 }
