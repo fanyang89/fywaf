@@ -20,12 +20,24 @@ struct Decision {
     rule_id: Option<String>,
 }
 
+const REQ_BUF_LEN: usize = 65536;
 const RESULT_BUF_LEN: usize = 65536;
+static mut REQ_BUF: [u8; REQ_BUF_LEN] = [0; REQ_BUF_LEN];
 static mut RESULT_BUF: [u8; RESULT_BUF_LEN] = [0; RESULT_BUF_LEN];
 
+/// Returns the address of the request buffer. The host writes the request JSON
+/// here before calling `decide`.
 #[no_mangle]
-pub extern "C" fn decide(req_ptr: *const u8, req_len: usize) -> i32 {
-    let req_slice = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
+pub extern "C" fn get_req_ptr() -> *const u8 {
+    unsafe { REQ_BUF.as_ptr() }
+}
+
+/// Called by the host with the byte length of the request JSON that was written
+/// into the buffer returned by `get_req_ptr`. Returns the byte length of the
+/// decision JSON written into `RESULT_BUF`.
+#[no_mangle]
+pub extern "C" fn decide(req_len: usize) -> i32 {
+    let req_slice = unsafe { &REQ_BUF[..req_len.min(REQ_BUF_LEN)] };
     let req_json = match std::str::from_utf8(req_slice) {
         Ok(s) => s,
         Err(_) => {
@@ -108,6 +120,8 @@ fn write_result(decision: &Decision) -> i32 {
     copy_len as i32
 }
 
+/// Returns the address of the result buffer. The host reads `decide`'s return
+/// value many bytes from this pointer to obtain the decision JSON.
 #[no_mangle]
 pub extern "C" fn get_result_ptr() -> *const u8 {
     unsafe { RESULT_BUF.as_ptr() }

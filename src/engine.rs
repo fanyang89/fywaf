@@ -69,10 +69,24 @@ impl WafEngine {
             .decide(profile_id, &wasm_req)
             .with_context(|| format!("wasm decide failed for profile {}", profile_id))?;
 
+        // Validate the status code is a legal HTTP status (100–599).
+        // Fall back to 200 for allow and 403 for block when the module omits
+        // or returns an invalid value.
+        let status_code = match wasm_decision.status {
+            Some(s) if (100..=599).contains(&s) => s,
+            _ => {
+                if wasm_decision.allow {
+                    200
+                } else {
+                    403
+                }
+            }
+        };
+
         Ok(Decision {
             profile_id: profile_id.to_string(),
             allow: wasm_decision.allow,
-            status_code: wasm_decision.status,
+            status_code,
             message: wasm_decision.message,
             rule_id: wasm_decision.rule_id,
         })
