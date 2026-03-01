@@ -2,8 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use serde::Serialize;
+
+use crate::secrule_parser::{
+    collect_conf_files, join_continued_lines, parse_action_id, parse_quoted_pair, split_actions,
+    split_first_token,
+};
 
 use crate::config::{
     Action, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform,
@@ -117,28 +122,6 @@ fn parse_default_action(input: &str) -> anyhow::Result<Action> {
     }
 }
 
-fn collect_conf_files(root: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
-    if root.is_file() {
-        if root.extension().and_then(|x| x.to_str()) == Some("conf") {
-            out.push(root.to_path_buf());
-        }
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(root)
-        .with_context(|| format!("failed to read directory {}", root.display()))?;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_conf_files(&path, out)?;
-        } else if path.extension().and_then(|x| x.to_str()) == Some("conf") {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
-
 fn import_file(path: &Path) -> anyhow::Result<(Vec<ImportedRule>, Vec<ParseResult>)> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read rule file {}", path.display()))?;
@@ -197,7 +180,7 @@ fn parse_secrule(target: &str, operator: &str, actions: &str) -> anyhow::Result<
     let action_list = split_actions(actions);
     let action = parse_action(&action_list)?;
     let status_code = parse_status_code(&action_list)?;
-    let rule_id = parse_action_id(&action_list).unwrap_or_else(|| "(no-id)".to_string());
+    let rule_id = parse_action_id(actions).unwrap_or_else(|| "(no-id)".to_string());
     let transforms = parse_transforms(&action_list)?;
 
     Ok(ParsedSecRule {
@@ -244,13 +227,6 @@ fn parse_status_code(actions: &[String]) -> anyhow::Result<Option<u16>> {
         bail!("invalid status code {}", code);
     }
     Ok(Some(code))
-}
-
-fn parse_action_id(actions: &[String]) -> Option<String> {
-    actions
-        .iter()
-        .find_map(|a| a.trim().strip_prefix("id:"))
-        .map(|x| x.trim_matches('\'').to_string())
 }
 
 fn parse_transforms(actions: &[String]) -> anyhow::Result<Vec<ConditionTransform>> {
@@ -523,109 +499,6 @@ fn resolve_data_file(file_name: &str, base_dir: Option<&Path>) -> anyhow::Result
     }
 
     bail!("unable to resolve data file {}", file_name)
-}
-
-fn join_continued_lines(raw: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut current = String::new();
-
-    for line in raw.lines() {
-        let trimmed = line.trim_end();
-        if current.is_empty() {
-            current.push_str(trimmed);
-        } else {
-            current.push(' ');
-            current.push_str(trimmed);
-        }
-
-        if trimmed.ends_with('\\') {
-            current.pop();
-        } else {
-            out.push(current.clone());
-            current.clear();
-        }
-    }
-
-    if !current.is_empty() {
-        out.push(current);
-    }
-
-    out
-}
-
-fn split_first_token(input: &str) -> Option<(&str, &str)> {
-    let mut parts = input.splitn(2, char::is_whitespace);
-    let first = parts.next()?.trim();
-    let rest = parts.next()?.trim_start();
-    Some((first, rest))
-}
-
-fn parse_quoted_pair(input: &str) -> Option<(&str, &str)> {
-    let input = input.trim_start();
-    if !input.starts_with('"') {
-        return None;
-    }
-    let (first, rest) = extract_quoted(input)?;
-    let rest = rest.trim_start();
-    if !rest.starts_with('"') {
-        return None;
-    }
-    let (second, _) = extract_quoted(rest)?;
-    Some((first, second))
-}
-
-fn extract_quoted(input: &str) -> Option<(&str, &str)> {
-    let bytes = input.as_bytes();
-    if bytes.first().copied()? != b'"' {
-        return None;
-    }
-    let mut i = 1usize;
-    let mut escaped = false;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if escaped {
-            escaped = false;
-            i += 1;
-            continue;
-        }
-        if b == b'\\' {
-            escaped = true;
-            i += 1;
-            continue;
-        }
-        if b == b'"' {
-            let value = &input[1..i];
-            let rest = &input[i + 1..];
-            return Some((value, rest));
-        }
-        i += 1;
-    }
-    None
-}
-
-fn split_actions(actions: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_single = false;
-
-    for ch in actions.chars() {
-        match ch {
-            '\'' => {
-                in_single = !in_single;
-                cur.push(ch);
-            }
-            ',' if !in_single => {
-                out.push(cur.trim().to_string());
-                cur.clear();
-            }
-            _ => cur.push(ch),
-        }
-    }
-
-    if !cur.trim().is_empty() {
-        out.push(cur.trim().to_string());
-    }
-    out
 }
 
 fn render_report(files: &[PathBuf], results: &[ParseResult]) -> String {

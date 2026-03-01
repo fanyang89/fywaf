@@ -1,9 +1,9 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use regex::Regex;
 
 use crate::config::{
@@ -756,6 +756,7 @@ mod tests {
         Action, AppConfig, ConditionConfig, ConditionOperator, ConditionTarget, ConditionTransform,
         ProfileConfig, RuleConfig, SiteConfig, UpstreamConfig,
     };
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn test_req(ip: IpAddr, method: &str, path: &str, ua: Option<&str>) -> RequestMeta {
         let (path_only, query) = match path.split_once('?') {

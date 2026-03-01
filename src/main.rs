@@ -2,6 +2,7 @@ mod config;
 mod engine;
 mod import_crs;
 mod proxy;
+mod secrule_parser;
 mod snapshot;
 
 use std::path::PathBuf;
