@@ -20,7 +20,8 @@ struct Decision {
     rule_id: Option<String>,
 }
 
-static mut RESULT_BUF: [u8; 65536] = [0; 65536];
+const RESULT_BUF_LEN: usize = 65536;
+static mut RESULT_BUF: [u8; RESULT_BUF_LEN] = [0; RESULT_BUF_LEN];
 
 #[no_mangle]
 pub extern "C" fn decide(req_ptr: *const u8, req_len: usize) -> i32 {
@@ -98,13 +99,13 @@ fn evaluate_request(req: &Request) -> Decision {
 fn write_result(decision: &Decision) -> i32 {
     let json = serde_json::to_string(decision).unwrap_or_default();
     let bytes = json.as_bytes();
-    let len = bytes.len();
+    let copy_len = bytes.len().min(RESULT_BUF_LEN);
 
     unsafe {
-        RESULT_BUF[..len].copy_from_slice(bytes);
+        RESULT_BUF[..copy_len].copy_from_slice(&bytes[..copy_len]);
     }
 
-    len as i32
+    copy_len as i32
 }
 
 #[no_mangle]

@@ -15,9 +15,12 @@
 1. Build a WASM rule module:
 
 ```bash
-# Create a simple rule module (see examples/wasm/public.rs for reference)
-rustup target add wasm32-wasip2
-rustc examples/wasm/public.rs --target wasm32-wasip2 -o examples/wasm/public.wasm
+# Add the wasm32-unknown-unknown target (no WASI needed)
+rustup target add wasm32-unknown-unknown
+
+# Build via Cargo (recommended) using a separate crate targeting wasm32-unknown-unknown:
+cargo build --target wasm32-unknown-unknown --release
+# Copy the resulting .wasm file to examples/wasm/public.wasm
 ```
 
 2. Run an upstream app:
@@ -61,6 +64,7 @@ Your WASM module must:
 
 1. Export a `memory` linear memory
 2. Export a `decide(req_ptr: i32, req_len: i32) -> i32` function
+3. Export a `get_result_ptr() -> i32` function that returns the address of the result buffer
 
 ### Input Format (JSON)
 
@@ -78,7 +82,8 @@ Your WASM module must:
 
 ### Output Format (JSON)
 
-Write result to memory starting at offset `req_len + 4` and return the length:
+The `decide` function writes the result JSON into an internal buffer and returns its length.
+The host retrieves the buffer address by calling the exported `get_result_ptr` function:
 
 ```json
 {
@@ -113,22 +118,31 @@ struct Decision {
 }
 
 static mut RESULT_BUF: [u8; 65536] = [0; 65536];
+const RESULT_BUF_LEN: usize = 65536;
 
 #[no_mangle]
 pub extern "C" fn decide(req_ptr: *const u8, req_len: usize) -> i32 {
     let req_slice = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
     let req: Request = serde_json::from_slice(req_slice).unwrap();
-    
+
     let decision = if req.path.contains("/admin") {
         Decision { allow: false, status: 403, message: Some("blocked".into()), rule_id: None }
     } else {
         Decision { allow: true, status: 200, message: None, rule_id: None }
     };
-    
+
     let json = serde_json::to_string(&decision).unwrap();
     let bytes = json.as_bytes();
-    unsafe { RESULT_BUF[..bytes.len()].copy_from_slice(bytes); }
-    bytes.len() as i32
+    // Clamp to buffer length to avoid panics on large outputs.
+    let copy_len = bytes.len().min(RESULT_BUF_LEN);
+    unsafe { RESULT_BUF[..copy_len].copy_from_slice(&bytes[..copy_len]); }
+    copy_len as i32
+}
+
+/// The host calls this after `decide` to locate the result buffer.
+#[no_mangle]
+pub extern "C" fn get_result_ptr() -> *const u8 {
+    unsafe { RESULT_BUF.as_ptr() }
 }
 ```
 
