@@ -1,10 +1,24 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use wasmtime::{Engine, Linker, Module, Store};
 
 use super::types::{WasmDecision, WasmRequest};
+
+// Fuel limit per request to prevent CPU DoS from infinite loops.
+const WASM_FUEL_PER_CALL: u64 = 1_000_000;
+
+// WASM linear memory page size (spec-defined, 64 KiB).
+const WASM_PAGE_SIZE: u64 = 65536;
+
+// Place the request at the start of the second page to avoid overlapping
+// the module's data segments (stack/heap/statics) which reside in the first page.
+const REQ_BASE_OFFSET: i32 = WASM_PAGE_SIZE as i32;
+
+// Maximum allowed result length returned by `decide`. Matches the guest's
+// RESULT_BUF_LEN (one page / 64 KiB), so a larger value is always a bug or attack.
+const MAX_RESULT_LEN: i32 = WASM_PAGE_SIZE as i32;
 
 pub struct WasmModule {
     module: Module,
@@ -25,7 +39,9 @@ impl std::fmt::Debug for WasmVm {
 
 impl WasmVm {
     pub fn new() -> Result<Self> {
-        let engine = Engine::default();
+        let mut config = wasmtime::Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config)?;
         Ok(Self {
             engine,
             modules: HashMap::new(),
@@ -49,17 +65,23 @@ impl WasmVm {
         )?;
 
         let mut store = Store::new(&self.engine, ());
+        store.set_fuel(WASM_FUEL_PER_CALL)?;
         let instance = linker.instantiate(&mut store, &module)?;
-        let mut instance_exports = instance.exports(&mut store);
 
-        let has_memory = instance_exports.any(|e| e.name() == "memory");
-        let has_decide = instance_exports.any(|e| e.name() == "decide");
+        // Collect all export names to avoid consuming the iterator twice.
+        let exports: HashSet<String> = instance
+            .exports(&mut store)
+            .map(|e| e.name().to_string())
+            .collect();
 
-        if !has_memory {
+        if !exports.contains("memory") {
             bail!("wasm module must export 'memory'");
         }
-        if !has_decide {
+        if !exports.contains("decide") {
             bail!("wasm module must export 'decide' function");
+        }
+        if !exports.contains("get_result_ptr") {
+            bail!("wasm module must export 'get_result_ptr' function");
         }
 
         self.modules
@@ -73,6 +95,9 @@ impl WasmVm {
             .get(profile_id)
             .ok_or_else(|| anyhow::anyhow!("profile not found: {}", profile_id))?;
 
+        // NOTE: A new Store and Instance are created per request. This is
+        // functionally correct but may become a throughput bottleneck under
+        // high load; consider pooling instances when performance is critical.
         let mut linker = Linker::new(&self.engine);
         linker.func_wrap(
             "env",
@@ -81,6 +106,7 @@ impl WasmVm {
         )?;
 
         let mut store = Store::new(&self.engine, ());
+        store.set_fuel(WASM_FUEL_PER_CALL)?;
         let instance = linker.instantiate(&mut store, &module.module)?;
 
         let memory = instance
@@ -91,17 +117,28 @@ impl WasmVm {
             .get_typed_func::<(i32, i32), i32>(&mut store, "decide")
             .context("decide function not found or has wrong signature")?;
 
+        let get_result_ptr_func = instance
+            .get_typed_func::<(), i32>(&mut store, "get_result_ptr")
+            .context("get_result_ptr function not found or has wrong signature")?;
+
         let req_json = serde_json::to_string(req).context("failed to serialize request")?;
         let req_bytes = req_json.as_bytes();
         let req_len = req_bytes.len() as i32;
+        let req_ptr = REQ_BASE_OFFSET;
 
-        let mem_size = memory.data_size(&store);
-        let req_ptr = 0i32;
-        let result_ptr = req_len + 4;
-
-        if result_ptr + 65536 > mem_size as i32 {
+        // Ensure memory is large enough for the request plus a full page for
+        // the result buffer (the module writes results into its own static buffer
+        // which is also expected to fit within linear memory).
+        let required_bytes = (req_ptr as u64)
+            .checked_add(req_bytes.len() as u64)
+            .and_then(|n| n.checked_add(WASM_PAGE_SIZE))
+            .context("request size overflow")?;
+        let mem_size = memory.data_size(&store) as u64;
+        if required_bytes > mem_size {
+            let extra_bytes = required_bytes - mem_size;
+            let pages_to_grow = extra_bytes.div_ceil(WASM_PAGE_SIZE);
             memory
-                .grow(&mut store, 2)
+                .grow(&mut store, pages_to_grow)
                 .context("failed to grow memory")?;
         }
 
@@ -115,6 +152,37 @@ impl WasmVm {
 
         if result_len <= 0 {
             bail!("decide function returned invalid length: {}", result_len);
+        }
+        if result_len > MAX_RESULT_LEN {
+            bail!(
+                "decide function returned result length {} exceeding maximum {}",
+                result_len,
+                MAX_RESULT_LEN
+            );
+        }
+
+        // The module writes the result into its own buffer (e.g. a static array)
+        // and exposes its location via get_result_ptr.
+        let result_ptr = get_result_ptr_func
+            .call(&mut store, ())
+            .context("failed to call get_result_ptr")?;
+
+        if result_ptr < 0 {
+            bail!("get_result_ptr returned negative pointer: {}", result_ptr);
+        }
+
+        // Validate that the entire result range is within linear memory.
+        let mem_size = memory.data_size(&store) as u64;
+        let result_end = (result_ptr as u64)
+            .checked_add(result_len as u64)
+            .context("result pointer + length overflows")?;
+        if result_end > mem_size {
+            bail!(
+                "result [{}, {}) is out of bounds (memory size: {})",
+                result_ptr,
+                result_end,
+                mem_size
+            );
         }
 
         let mut result_bytes = vec![0u8; result_len as usize];
