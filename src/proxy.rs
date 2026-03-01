@@ -215,7 +215,6 @@ async fn handle_connection(
         client_ip = %client_ip,
         method = %request.method,
         path = %request.path,
-        status = 200u16,
         waf_action = "allow",
         rule_id = decision.rule_id.as_deref().unwrap_or("-"),
         upstream = %site.upstream.authority(),

@@ -15,21 +15,16 @@ pub struct WasmRequest<'a> {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WasmDecision {
     pub allow: bool,
-    #[serde(default = "default_status")]
-    pub status: u16,
+    pub status: Option<u16>,
     pub message: Option<String>,
     pub rule_id: Option<String>,
-}
-
-fn default_status() -> u16 {
-    200
 }
 
 impl WasmDecision {
     pub fn allow() -> Self {
         Self {
             allow: true,
-            status: 200,
+            status: Some(200),
             message: None,
             rule_id: None,
         }
@@ -38,7 +33,7 @@ impl WasmDecision {
     pub fn block(status: u16, message: impl Into<String>) -> Self {
         Self {
             allow: false,
-            status,
+            status: Some(status),
             message: Some(message.into()),
             rule_id: None,
         }
@@ -69,7 +64,7 @@ mod tests {
         let json = r#"{"allow":false,"status":403,"message":"blocked"}"#;
         let decision: WasmDecision = serde_json::from_str(json).unwrap();
         assert!(!decision.allow);
-        assert_eq!(decision.status, 403);
+        assert_eq!(decision.status, Some(403));
     }
 
     #[test]
@@ -77,6 +72,6 @@ mod tests {
         let json = r#"{"allow":true}"#;
         let decision: WasmDecision = serde_json::from_str(json).unwrap();
         assert!(decision.allow);
-        assert_eq!(decision.status, 200);
+        assert_eq!(decision.status, None);
     }
 }

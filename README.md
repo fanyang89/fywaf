@@ -60,11 +60,12 @@ profiles:
 
 ## WASM Module Interface
 
-Your WASM module must:
+Your WASM module must export:
 
-1. Export a `memory` linear memory
-2. Export a `decide(req_ptr: i32, req_len: i32) -> i32` function
-3. Export a `get_result_ptr() -> i32` function that returns the address of the result buffer
+1. `memory` — linear memory
+2. `get_req_ptr() -> i32` — returns the address of a guest-owned request buffer; the host writes the request JSON here before calling `decide`
+3. `decide(req_len: i32) -> i32` — evaluates the request and returns the byte length of the decision JSON written into the result buffer
+4. `get_result_ptr() -> i32` — returns the address of the result buffer; the host reads `decide`'s return-value many bytes from here
 
 ### Input Format (JSON)
 
@@ -82,8 +83,8 @@ Your WASM module must:
 
 ### Output Format (JSON)
 
-The `decide` function writes the result JSON into an internal buffer and returns its length.
-The host retrieves the buffer address by calling the exported `get_result_ptr` function:
+`decide` writes the result JSON into the guest's result buffer and returns its byte length.
+The host locates the buffer by calling `get_result_ptr`:
 
 ```json
 {
@@ -93,6 +94,8 @@ The host retrieves the buffer address by calling the exported `get_result_ptr` f
   "rule_id": "block-sqli"
 }
 ```
+
+The `status` field is optional; the host defaults to 200 for allowed requests and 403 for blocked ones.
 
 ### Example WASM Module (Rust)
 
@@ -117,12 +120,22 @@ struct Decision {
     rule_id: Option<String>,
 }
 
-static mut RESULT_BUF: [u8; 65536] = [0; 65536];
+const REQ_BUF_LEN: usize = 65536;
 const RESULT_BUF_LEN: usize = 65536;
+static mut REQ_BUF: [u8; REQ_BUF_LEN] = [0; REQ_BUF_LEN];
+static mut RESULT_BUF: [u8; RESULT_BUF_LEN] = [0; RESULT_BUF_LEN];
 
+/// Returns the address of the request buffer. The host writes the request JSON here.
 #[no_mangle]
-pub extern "C" fn decide(req_ptr: *const u8, req_len: usize) -> i32 {
-    let req_slice = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
+pub extern "C" fn get_req_ptr() -> *const u8 {
+    unsafe { REQ_BUF.as_ptr() }
+}
+
+/// Called by the host with the byte length of the JSON in the request buffer.
+/// Returns the byte length of the decision JSON written into RESULT_BUF.
+#[no_mangle]
+pub extern "C" fn decide(req_len: usize) -> i32 {
+    let req_slice = unsafe { &REQ_BUF[..req_len.min(REQ_BUF_LEN)] };
     let req: Request = serde_json::from_slice(req_slice).unwrap();
 
     let decision = if req.path.contains("/admin") {
