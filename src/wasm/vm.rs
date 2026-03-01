@@ -16,6 +16,10 @@ const WASM_PAGE_SIZE: u64 = 65536;
 // the module's data segments (stack/heap/statics) which reside in the first page.
 const REQ_BASE_OFFSET: i32 = WASM_PAGE_SIZE as i32;
 
+// Maximum allowed result length returned by `decide`. Matches the guest's
+// RESULT_BUF_LEN (one page / 64 KiB), so a larger value is always a bug or attack.
+const MAX_RESULT_LEN: i32 = WASM_PAGE_SIZE as i32;
+
 pub struct WasmModule {
     module: Module,
 }
@@ -149,12 +153,37 @@ impl WasmVm {
         if result_len <= 0 {
             bail!("decide function returned invalid length: {}", result_len);
         }
+        if result_len > MAX_RESULT_LEN {
+            bail!(
+                "decide function returned result length {} exceeding maximum {}",
+                result_len,
+                MAX_RESULT_LEN
+            );
+        }
 
         // The module writes the result into its own buffer (e.g. a static array)
         // and exposes its location via get_result_ptr.
         let result_ptr = get_result_ptr_func
             .call(&mut store, ())
             .context("failed to call get_result_ptr")?;
+
+        if result_ptr < 0 {
+            bail!("get_result_ptr returned negative pointer: {}", result_ptr);
+        }
+
+        // Validate that the entire result range is within linear memory.
+        let mem_size = memory.data_size(&store) as u64;
+        let result_end = (result_ptr as u64)
+            .checked_add(result_len as u64)
+            .context("result pointer + length overflows")?;
+        if result_end > mem_size {
+            bail!(
+                "result [{}, {}) is out of bounds (memory size: {})",
+                result_ptr,
+                result_end,
+                mem_size
+            );
+        }
 
         let mut result_bytes = vec![0u8; result_len as usize];
         memory
