@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use regex::Regex;
 
 use crate::config::{

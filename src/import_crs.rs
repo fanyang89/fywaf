@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::Serialize;
 
 use crate::secrule_parser::{

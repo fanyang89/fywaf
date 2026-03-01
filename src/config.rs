@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use rkyv::{Archive, Deserialize as RkyvDeserialize, Serialize as RkyvSerialize};
+use fory::ForyObject;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,25 +40,14 @@ pub struct ProfileConfig {
     pub rules: Vec<RuleConfig>,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Deserialize,
-    Serialize,
-    Archive,
-    RkyvSerialize,
-    RkyvDeserialize,
-    PartialEq,
-    Eq,
-)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Allow,
     Block,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
 pub struct RuleConfig {
     pub id: String,
     #[serde(default = "default_enabled")]
@@ -77,7 +66,7 @@ pub struct RuleConfig {
     pub conditions: Vec<ConditionConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
 pub struct ConditionConfig {
     pub target: ConditionTarget,
     pub operator: ConditionOperator,
@@ -89,7 +78,7 @@ pub struct ConditionConfig {
     pub transforms: Vec<ConditionTransform>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, Archive, RkyvSerialize, RkyvDeserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConditionTarget {
     Method,
@@ -101,18 +90,7 @@ pub enum ConditionTarget {
     ClientIp,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Deserialize,
-    Serialize,
-    Archive,
-    RkyvSerialize,
-    RkyvDeserialize,
-    PartialEq,
-    Eq,
-)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionOperator {
     Eq,
@@ -124,18 +102,7 @@ pub enum ConditionOperator {
     IpMatch,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    Deserialize,
-    Serialize,
-    Archive,
-    RkyvSerialize,
-    RkyvDeserialize,
-    PartialEq,
-    Eq,
-)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionTransform {
     None,

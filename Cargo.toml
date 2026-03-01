@@ -6,9 +6,9 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.102"
 clap = { version = "4.5.48", features = ["derive"] }
-crc32fast = "1.4.2"
+fory = "0.15"
+fory-core = "0.15"
 pingora = "0.7.0"
-rkyv = { version = "0.8.11", features = ["std", "bytecheck"] }
 regex = "1.12.2"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9.34"
