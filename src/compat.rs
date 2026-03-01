@@ -1,44 +1,32 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
-use clap::Parser;
 
-#[path = "../secrule_parser.rs"]
-mod secrule_parser;
-use secrule_parser::{
+use crate::secrule_parser::{
     collect_conf_files, join_continued_lines, parse_action_id, parse_quoted_pair, split_actions,
     split_first_token,
 };
 
-#[derive(Parser, Debug)]
-#[command(name = "fywaf-compat")]
-#[command(about = "Report compatibility of CRS-style SecRule files")]
-struct Args {
-    #[arg(long, short, default_value = "rules")]
-    rules_dir: PathBuf,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RuleStatus {
+pub enum RuleStatus {
     Supported,
     Partial,
     Unsupported,
 }
 
 #[derive(Debug)]
-struct RuleReport {
-    file: PathBuf,
-    rule_id: String,
-    status: RuleStatus,
-    reasons: Vec<String>,
+pub struct RuleReport {
+    pub file: std::path::PathBuf,
+    pub rule_id: String,
+    pub status: RuleStatus,
+    pub reasons: Vec<String>,
 }
 
-fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+pub fn run(rules_dir: &Path) -> anyhow::Result<()> {
     let mut files = Vec::new();
-    collect_conf_files(&args.rules_dir, &mut files)?;
+    collect_conf_files(rules_dir, &mut files)?;
     files.sort();
 
     let mut reports = Vec::new();

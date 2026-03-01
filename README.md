@@ -28,7 +28,7 @@ python3 -m http.server 9001
 2. Start fywaf:
 
 ```bash
-cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules.snapshot.bin
+cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
 cargo run -- run --config examples/config.yml
 ```
 
@@ -64,7 +64,7 @@ Condition transforms currently supported in `rules[].conditions[].transforms`:
 Compatibility report command for CRS-style rules:
 
 ```bash
-cargo run --bin fywaf-compat -- --rules-dir /path/to/coreruleset/rules
+cargo run -- compat --rules-dir /path/to/coreruleset/rules
 ```
 
 CRS import command (v1 subset):
@@ -76,7 +76,7 @@ cargo run -- convert --rules-dir /path/to/coreruleset/rules --out examples/crs.i
 Then build the snapshot and point `engine.snapshot_path` to the `.bin` output:
 
 ```bash
-cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules.snapshot.bin
+cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
 ```
 
 ## Notes / Current Limits
@@ -85,7 +85,7 @@ cargo run --bin fywaf-build -- --config examples/config.yml --out examples/rules
 - No TLS termination
 - `site` is matched by listen port
 - Config reload requires restart
-- `engine.snapshot_path` must point to a binary snapshot (`.bin`) built by `fywaf-build`
+- `engine.snapshot_path` must point to a binary snapshot (`.bin`) built by `fywaf build`
 - Chunked request bodies are not supported in this MVP
 - Upstream only supports `http://...`
 

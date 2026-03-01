@@ -1,3 +1,4 @@
+mod compat;
 mod config;
 mod engine;
 mod import_crs;
@@ -28,6 +29,8 @@ struct Cli {
 enum Commands {
     Run(RunArgs),
     Convert(ConvertArgs),
+    Build(BuildArgs),
+    Compat(CompatArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -50,12 +53,28 @@ struct ConvertArgs {
     report_out: PathBuf,
 }
 
+#[derive(ClapArgs, Debug)]
+struct BuildArgs {
+    #[arg(long, short, default_value = "examples/config.yml")]
+    config: PathBuf,
+    #[arg(long, short, default_value = "examples/rules.snapshot.bin")]
+    out: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+struct CompatArgs {
+    #[arg(long, short, default_value = "rules")]
+    rules_dir: PathBuf,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Run(run_args) => run_waf(run_args).await,
-        Commands::Convert(convert_args) => run_convert(convert_args),
+        Commands::Run(args) => run_waf(args).await,
+        Commands::Convert(args) => run_convert(args),
+        Commands::Build(args) => run_build(args),
+        Commands::Compat(args) => run_compat(args),
     }
 }
 
@@ -87,6 +106,25 @@ fn run_convert(args: ConvertArgs) -> anyhow::Result<()> {
         default_action: args.default_action,
         report_out: args.report_out,
     })
+}
+
+fn run_build(args: BuildArgs) -> anyhow::Result<()> {
+    if !args.out.to_string_lossy().ends_with(".bin") {
+        anyhow::bail!("--out must be a .bin snapshot path");
+    }
+
+    let app_config = AppConfig::from_path(&args.config)
+        .with_context(|| format!("failed to load config file {}", args.config.display()))?;
+    app_config.validate()?;
+
+    let snapshot = EngineSnapshot::from_app_config(&app_config);
+    snapshot.write_to_path(&args.out)?;
+    println!("snapshot written to {}", args.out.display());
+    Ok(())
+}
+
+fn run_compat(args: CompatArgs) -> anyhow::Result<()> {
+    compat::run(&args.rules_dir)
 }
 
 fn init_logging() {
