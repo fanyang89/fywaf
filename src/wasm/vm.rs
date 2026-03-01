@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use wasmtime::{Engine, Linker, Module, Store};
 
 use super::types::{WasmDecision, WasmRequest};

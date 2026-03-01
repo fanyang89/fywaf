@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use anyhow::{bail, Context};
+use anyhow::{Context, bail};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]

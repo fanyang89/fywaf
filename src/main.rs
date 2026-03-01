@@ -48,7 +48,7 @@ async fn run_waf(args: RunArgs) -> anyhow::Result<()> {
 
     let base_path = args.config.parent().unwrap_or(std::path::Path::new("."));
     let engine = Arc::new(WafEngine::from_config(&app_config, base_path)?);
-    
+
     info!(
         sites = app_config.sites.len(),
         profiles = app_config.profiles.len(),
