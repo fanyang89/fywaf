@@ -10,7 +10,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
-use crate::config::{Action, AppConfig};
+use crate::config::AppConfig;
 use crate::engine::{RequestMeta, WafEngine};
 
 const MAX_HEADER_SIZE: usize = 64 * 1024;
@@ -173,7 +173,7 @@ async fn handle_connection(
         },
     )?;
 
-    if decision.action == Action::Block {
+    if !decision.allow {
         write_blocked_response(&mut client, decision.status_code).await?;
         info!(
             site_id = %site.id,
@@ -183,7 +183,8 @@ async fn handle_connection(
             path = %request.path,
             status = decision.status_code,
             waf_action = "block",
-            matched_rule_id = decision.matched_rule_id.as_deref().unwrap_or("-"),
+            rule_id = decision.rule_id.as_deref().unwrap_or("-"),
+            message = decision.message.as_deref().unwrap_or("-"),
             latency_ms = started.elapsed().as_millis() as u64,
             "request blocked",
         );
@@ -216,7 +217,7 @@ async fn handle_connection(
         path = %request.path,
         status = 200u16,
         waf_action = "allow",
-        matched_rule_id = decision.matched_rule_id.as_deref().unwrap_or("-"),
+        rule_id = decision.rule_id.as_deref().unwrap_or("-"),
         upstream = %site.upstream.authority(),
         response_bytes = copied,
         latency_ms = started.elapsed().as_millis() as u64,

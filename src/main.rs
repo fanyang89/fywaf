@@ -1,10 +1,7 @@
-mod compat;
 mod config;
 mod engine;
-mod import_crs;
 mod proxy;
-mod secrule_parser;
-mod snapshot;
+mod wasm;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,13 +10,11 @@ use anyhow::Context;
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use config::AppConfig;
 use engine::WafEngine;
-use import_crs::ImportCrsOptions;
-use snapshot::EngineSnapshot;
 use tracing::info;
 
 #[derive(Parser, Debug)]
 #[command(name = "fywaf")]
-#[command(about = "A minimal open-source HTTP reverse-proxy WAF")]
+#[command(about = "A minimal open-source HTTP reverse-proxy WAF with WASM rules")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -28,9 +23,6 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Run(RunArgs),
-    Convert(ConvertArgs),
-    Build(BuildArgs),
-    Compat(CompatArgs),
 }
 
 #[derive(ClapArgs, Debug)]
@@ -39,42 +31,11 @@ struct RunArgs {
     config: PathBuf,
 }
 
-#[derive(ClapArgs, Debug)]
-struct ConvertArgs {
-    #[arg(long, short)]
-    rules_dir: PathBuf,
-    #[arg(long, short, default_value = "examples/crs.import.yml")]
-    out: PathBuf,
-    #[arg(long, default_value = "crs-imported")]
-    profile_id: String,
-    #[arg(long, default_value = "allow")]
-    default_action: String,
-    #[arg(long, default_value = "examples/crs.import.report.txt")]
-    report_out: PathBuf,
-}
-
-#[derive(ClapArgs, Debug)]
-struct BuildArgs {
-    #[arg(long, short, default_value = "examples/config.yml")]
-    config: PathBuf,
-    #[arg(long, short, default_value = "examples/rules.snapshot.bin")]
-    out: PathBuf,
-}
-
-#[derive(ClapArgs, Debug)]
-struct CompatArgs {
-    #[arg(long, short, default_value = "rules")]
-    rules_dir: PathBuf,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Run(args) => run_waf(args).await,
-        Commands::Convert(args) => run_convert(args),
-        Commands::Build(args) => run_build(args),
-        Commands::Compat(args) => run_compat(args),
     }
 }
 
@@ -85,46 +46,16 @@ async fn run_waf(args: RunArgs) -> anyhow::Result<()> {
         .with_context(|| format!("failed to load config file {}", args.config.display()))?;
     app_config.validate()?;
 
-    let engine = Arc::new(WafEngine::from_config(&app_config)?);
-    let snapshot_path = app_config.engine.snapshot_path.clone();
+    let base_path = args.config.parent().unwrap_or(std::path::Path::new("."));
+    let engine = Arc::new(WafEngine::from_config(&app_config, base_path)?);
+    
     info!(
         sites = app_config.sites.len(),
         profiles = app_config.profiles.len(),
-        snapshot_version = EngineSnapshot::version(),
-        snapshot_path = snapshot_path.as_deref().unwrap_or("-"),
-        "starting fywaf",
+        "starting fywaf with wasm engine",
     );
 
     proxy::run(app_config, engine).await
-}
-
-fn run_convert(args: ConvertArgs) -> anyhow::Result<()> {
-    import_crs::run(ImportCrsOptions {
-        rules_dir: args.rules_dir,
-        out: args.out,
-        profile_id: args.profile_id,
-        default_action: args.default_action,
-        report_out: args.report_out,
-    })
-}
-
-fn run_build(args: BuildArgs) -> anyhow::Result<()> {
-    if !args.out.to_string_lossy().ends_with(".bin") {
-        anyhow::bail!("--out must be a .bin snapshot path");
-    }
-
-    let app_config = AppConfig::from_path(&args.config)
-        .with_context(|| format!("failed to load config file {}", args.config.display()))?;
-    app_config.validate()?;
-
-    let snapshot = EngineSnapshot::from_app_config(&app_config);
-    snapshot.write_to_path(&args.out)?;
-    println!("snapshot written to {}", args.out.display());
-    Ok(())
-}
-
-fn run_compat(args: CompatArgs) -> anyhow::Result<()> {
-    compat::run(&args.rules_dir)
 }
 
 fn init_logging() {

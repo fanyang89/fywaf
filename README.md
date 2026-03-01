@@ -1,82 +1,135 @@
 # fywaf
 
-`fywaf` is a minimal open-source WAF that works as an HTTP/1.1 reverse proxy.
+`fywaf` is a minimal open-source WAF that works as an HTTP/1.1 reverse proxy with WASM-based rules engine.
 
-## Features (v0.2)
+## Features
 
 - Multi-site reverse proxy (`site => listen port => one upstream`)
 - Per-site WAF profile binding (`site => profile`)
-- Per-profile default action and rule set
-- Rule dimensions:
-  - client IP / CIDR
-  - HTTP method
-  - path prefix
-  - User-Agent substring
-  - generic conditions (`target + operator`) for method/path/query/body/header/ip
-- Fail-fast config validation for invalid `site -> profile` mappings
+- **WASM-based rules engine** - each profile loads a user-provided WASM module
+- Fast and secure rule execution using [wasmtime](https://wasmtime.dev/)
 - Structured key-value logs via `tracing`
 
 ## Quick Start
 
-1. Run two upstream apps:
+1. Build a WASM rule module:
+
+```bash
+# Create a simple rule module (see examples/wasm/public.rs for reference)
+rustup target add wasm32-wasip2
+rustc examples/wasm/public.rs --target wasm32-wasip2 -o examples/wasm/public.wasm
+```
+
+2. Run an upstream app:
 
 ```bash
 python3 -m http.server 9000
-python3 -m http.server 9001
 ```
 
-2. Start fywaf:
+3. Start fywaf:
 
 ```bash
-cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
 cargo run -- run --config examples/config.yml
 ```
 
-3. Send request through fywaf:
+4. Send request through fywaf:
 
 ```bash
 curl -v http://127.0.0.1:8080/
-curl -v http://127.0.0.1:8081/admin
 ```
 
-## Config
+## Configuration
 
-See [`examples/config.yml`](examples/config.yml).
+See [`examples/config.yml`](examples/config.yml):
 
-Condition operators currently supported in `rules[].conditions`:
+```yaml
+sites:
+  - id: "blog"
+    listen: "0.0.0.0:8080"
+    upstream:
+      url: "http://127.0.0.1:9000"
+    profile: "public"
 
-- `eq`
-- `contains`
-- `prefix`
-- `suffix`
-- `regex`
-- `in`
-- `ip_match` (for `client_ip` target)
-
-Condition transforms currently supported in `rules[].conditions[].transforms`:
-
-- `none`
-- `lowercase`
-- `url_decode`
-- `compress_whitespace`
-- `remove_nulls`
-
-Compatibility report command for CRS-style rules:
-
-```bash
-cargo run -- compat --rules-dir /path/to/coreruleset/rules
+profiles:
+  - id: "public"
+    wasm_path: "wasm/public.wasm"
 ```
 
-CRS import command (v1 subset):
+## WASM Module Interface
 
-```bash
-cargo run -- convert --rules-dir /path/to/coreruleset/rules --out examples/crs.import.yml --report-out examples/crs.import.report.txt
+Your WASM module must:
+
+1. Export a `memory` linear memory
+2. Export a `decide(req_ptr: i32, req_len: i32) -> i32` function
+
+### Input Format (JSON)
+
+```json
+{
+  "client_ip": "192.168.1.1",
+  "method": "POST",
+  "path": "/api/login",
+  "query": "user=admin",
+  "user_agent": "Mozilla/5.0...",
+  "headers": {"content-type": "application/json"},
+  "body": "{\"username\":\"admin\"}"
+}
 ```
 
-Then build the snapshot and point `engine.snapshot_path` to the `.bin` output:
+### Output Format (JSON)
 
-```bash
-cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
+Write result to memory starting at offset `req_len + 4` and return the length:
+
+```json
+{
+  "allow": false,
+  "status": 403,
+  "message": "SQL injection detected",
+  "rule_id": "block-sqli"
+}
+```
+
+### Example WASM Module (Rust)
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Deserialize)]
+struct Request {
+    method: String,
+    path: String,
+    user_agent: Option<String>,
+    body: Option<String>,
+    // ... other fields
+}
+
+#[derive(Serialize)]
+struct Decision {
+    allow: bool,
+    status: u16,
+    message: Option<String>,
+    rule_id: Option<String>,
+}
+
+static mut RESULT_BUF: [u8; 65536] = [0; 65536];
+
+#[no_mangle]
+pub extern "C" fn decide(req_ptr: *const u8, req_len: usize) -> i32 {
+    let req_slice = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
+    let req: Request = serde_json::from_slice(req_slice).unwrap();
+    
+    let decision = if req.path.contains("/admin") {
+        Decision { allow: false, status: 403, message: Some("blocked".into()), rule_id: None }
+    } else {
+        Decision { allow: true, status: 200, message: None, rule_id: None }
+    };
+    
+    let json = serde_json::to_string(&decision).unwrap();
+    let bytes = json.as_bytes();
+    unsafe { RESULT_BUF[..bytes.len()].copy_from_slice(bytes); }
+    bytes.len() as i32
+}
 ```
 
 ## Notes / Current Limits
@@ -85,8 +138,7 @@ cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bi
 - No TLS termination
 - `site` is matched by listen port
 - Config reload requires restart
-- `engine.snapshot_path` must point to a binary snapshot (`.bin`) built by `fywaf build`
-- Chunked request bodies are not supported in this MVP
+- Chunked request bodies are not supported
 - Upstream only supports `http://...`
 
 ## License
