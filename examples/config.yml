@@ -5,43 +5,6 @@ sites:
       url: "http://127.0.0.1:9000"
     profile: "public"
 
-  - id: "admin"
-    listen: "0.0.0.0:8081"
-    upstream:
-      url: "http://127.0.0.1:9001"
-    profile: "strict"
-
 profiles:
   - id: "public"
-    default_action: "allow"
-    rules:
-      - id: "block-scanner-ua"
-        enabled: true
-        action: "block"
-        status_code: 403
-        user_agent_contains: ["sqlmap", "nmap"]
-
-      - id: "block-risk-header"
-        enabled: true
-        action: "block"
-        status_code: 403
-        conditions:
-          - target:
-              kind: "header"
-              name: "x-risk"
-            operator: "contains"
-            value: "bot"
-            transforms: ["lowercase"]
-
-  - id: "strict"
-    default_action: "block"
-    rules:
-      - id: "allow-office-admin"
-        enabled: true
-        action: "allow"
-        methods: ["GET", "POST"]
-        path_prefixes: ["/admin"]
-        ip_cidrs: ["10.0.0.0/8"]
-
-engine:
-  snapshot_path: "examples/rules.snapshot.bin"
+    wasm_path: "wasm/public.wasm"

@@ -1,82 +1,162 @@
 # fywaf
 
-`fywaf` is a minimal open-source WAF that works as an HTTP/1.1 reverse proxy.
+`fywaf` is a minimal open-source WAF that works as an HTTP/1.1 reverse proxy with WASM-based rules engine.
 
-## Features (v0.2)
+## Features
 
 - Multi-site reverse proxy (`site => listen port => one upstream`)
 - Per-site WAF profile binding (`site => profile`)
-- Per-profile default action and rule set
-- Rule dimensions:
-  - client IP / CIDR
-  - HTTP method
-  - path prefix
-  - User-Agent substring
-  - generic conditions (`target + operator`) for method/path/query/body/header/ip
-- Fail-fast config validation for invalid `site -> profile` mappings
+- **WASM-based rules engine** - each profile loads a user-provided WASM module
+- Fast and secure rule execution using [wasmtime](https://wasmtime.dev/)
 - Structured key-value logs via `tracing`
 
 ## Quick Start
 
-1. Run two upstream apps:
+1. Build a WASM rule module:
+
+```bash
+# Add the wasm32-unknown-unknown target (no WASI needed)
+rustup target add wasm32-unknown-unknown
+
+# Build via Cargo (recommended) using a separate crate targeting wasm32-unknown-unknown:
+cargo build --target wasm32-unknown-unknown --release
+# Copy the resulting .wasm file to examples/wasm/public.wasm
+```
+
+2. Run an upstream app:
 
 ```bash
 python3 -m http.server 9000
-python3 -m http.server 9001
 ```
 
-2. Start fywaf:
+3. Start fywaf:
 
 ```bash
-cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
 cargo run -- run --config examples/config.yml
 ```
 
-3. Send request through fywaf:
+4. Send request through fywaf:
 
 ```bash
 curl -v http://127.0.0.1:8080/
-curl -v http://127.0.0.1:8081/admin
 ```
 
-## Config
+## Configuration
 
-See [`examples/config.yml`](examples/config.yml).
+See [`examples/config.yml`](examples/config.yml):
 
-Condition operators currently supported in `rules[].conditions`:
+```yaml
+sites:
+  - id: "blog"
+    listen: "0.0.0.0:8080"
+    upstream:
+      url: "http://127.0.0.1:9000"
+    profile: "public"
 
-- `eq`
-- `contains`
-- `prefix`
-- `suffix`
-- `regex`
-- `in`
-- `ip_match` (for `client_ip` target)
-
-Condition transforms currently supported in `rules[].conditions[].transforms`:
-
-- `none`
-- `lowercase`
-- `url_decode`
-- `compress_whitespace`
-- `remove_nulls`
-
-Compatibility report command for CRS-style rules:
-
-```bash
-cargo run -- compat --rules-dir /path/to/coreruleset/rules
+profiles:
+  - id: "public"
+    wasm_path: "wasm/public.wasm"
 ```
 
-CRS import command (v1 subset):
+## WASM Module Interface
 
-```bash
-cargo run -- convert --rules-dir /path/to/coreruleset/rules --out examples/crs.import.yml --report-out examples/crs.import.report.txt
+Your WASM module must export:
+
+1. `memory` — linear memory
+2. `get_req_ptr() -> i32` — returns the address of a guest-owned request buffer; the host writes the request JSON here before calling `decide`
+3. `decide(req_len: i32) -> i32` — evaluates the request and returns the byte length of the decision JSON written into the result buffer
+4. `get_result_ptr() -> i32` — returns the address of the result buffer; the host reads `decide`'s return-value many bytes from here
+
+### Input Format (JSON)
+
+```json
+{
+  "client_ip": "192.168.1.1",
+  "method": "POST",
+  "path": "/api/login",
+  "query": "user=admin",
+  "user_agent": "Mozilla/5.0...",
+  "headers": {"content-type": "application/json"},
+  "body": "{\"username\":\"admin\"}"
+}
 ```
 
-Then build the snapshot and point `engine.snapshot_path` to the `.bin` output:
+### Output Format (JSON)
 
-```bash
-cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bin
+`decide` writes the result JSON into the guest's result buffer and returns its byte length.
+The host locates the buffer by calling `get_result_ptr`:
+
+```json
+{
+  "allow": false,
+  "status": 403,
+  "message": "SQL injection detected",
+  "rule_id": "block-sqli"
+}
+```
+
+The `status` field is optional; the host defaults to 200 for allowed requests and 403 for blocked ones.
+
+### Example WASM Module (Rust)
+
+```rust
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Deserialize)]
+struct Request {
+    method: String,
+    path: String,
+    user_agent: Option<String>,
+    body: Option<String>,
+    // ... other fields
+}
+
+#[derive(Serialize)]
+struct Decision {
+    allow: bool,
+    status: u16,
+    message: Option<String>,
+    rule_id: Option<String>,
+}
+
+const REQ_BUF_LEN: usize = 65536;
+const RESULT_BUF_LEN: usize = 65536;
+static mut REQ_BUF: [u8; REQ_BUF_LEN] = [0; REQ_BUF_LEN];
+static mut RESULT_BUF: [u8; RESULT_BUF_LEN] = [0; RESULT_BUF_LEN];
+
+/// Returns the address of the request buffer. The host writes the request JSON here.
+#[no_mangle]
+pub extern "C" fn get_req_ptr() -> *const u8 {
+    unsafe { REQ_BUF.as_ptr() }
+}
+
+/// Called by the host with the byte length of the JSON in the request buffer.
+/// Returns the byte length of the decision JSON written into RESULT_BUF.
+#[no_mangle]
+pub extern "C" fn decide(req_len: usize) -> i32 {
+    let req_slice = unsafe { &REQ_BUF[..req_len.min(REQ_BUF_LEN)] };
+    let req: Request = serde_json::from_slice(req_slice).unwrap();
+
+    let decision = if req.path.contains("/admin") {
+        Decision { allow: false, status: 403, message: Some("blocked".into()), rule_id: None }
+    } else {
+        Decision { allow: true, status: 200, message: None, rule_id: None }
+    };
+
+    let json = serde_json::to_string(&decision).unwrap();
+    let bytes = json.as_bytes();
+    // Clamp to buffer length to avoid panics on large outputs.
+    let copy_len = bytes.len().min(RESULT_BUF_LEN);
+    unsafe { RESULT_BUF[..copy_len].copy_from_slice(&bytes[..copy_len]); }
+    copy_len as i32
+}
+
+/// The host calls this after `decide` to locate the result buffer.
+#[no_mangle]
+pub extern "C" fn get_result_ptr() -> *const u8 {
+    unsafe { RESULT_BUF.as_ptr() }
+}
 ```
 
 ## Notes / Current Limits
@@ -85,8 +165,7 @@ cargo run -- build --config examples/config.yml --out examples/rules.snapshot.bi
 - No TLS termination
 - `site` is matched by listen port
 - Config reload requires restart
-- `engine.snapshot_path` must point to a binary snapshot (`.bin`) built by `fywaf build`
-- Chunked request bodies are not supported in this MVP
+- Chunked request bodies are not supported
 - Upstream only supports `http://...`
 
 ## License

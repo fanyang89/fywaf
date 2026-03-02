@@ -3,15 +3,12 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, bail};
-use fory::ForyObject;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub sites: Vec<SiteConfig>,
     pub profiles: Vec<ProfileConfig>,
-    #[serde(default)]
-    pub engine: EngineConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -27,93 +24,10 @@ pub struct UpstreamConfig {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct EngineConfig {
-    pub snapshot_path: Option<String>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProfileConfig {
     pub id: String,
-    pub default_action: Action,
-    #[serde(default)]
-    pub rules: Vec<RuleConfig>,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Action {
-    Allow,
-    Block,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
-pub struct RuleConfig {
-    pub id: String,
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-    pub action: Action,
-    pub status_code: Option<u16>,
-    #[serde(default)]
-    pub methods: Vec<String>,
-    #[serde(default)]
-    pub path_prefixes: Vec<String>,
-    #[serde(default)]
-    pub ip_cidrs: Vec<String>,
-    #[serde(default)]
-    pub user_agent_contains: Vec<String>,
-    #[serde(default)]
-    pub conditions: Vec<ConditionConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
-pub struct ConditionConfig {
-    pub target: ConditionTarget,
-    pub operator: ConditionOperator,
-    #[serde(default)]
-    pub value: Option<String>,
-    #[serde(default)]
-    pub values: Vec<String>,
-    #[serde(default)]
-    pub transforms: Vec<ConditionTransform>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ForyObject)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ConditionTarget {
-    Method,
-    Path,
-    Query,
-    Body,
-    UserAgent,
-    Header { name: String },
-    ClientIp,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ConditionOperator {
-    Eq,
-    Contains,
-    Prefix,
-    Suffix,
-    Regex,
-    In,
-    IpMatch,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, ForyObject, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ConditionTransform {
-    None,
-    Lowercase,
-    UrlDecode,
-    CompressWhitespace,
-    RemoveNulls,
-}
-
-fn default_enabled() -> bool {
-    true
+    pub wasm_path: String,
 }
 
 impl AppConfig {
@@ -132,16 +46,6 @@ impl AppConfig {
         if self.profiles.is_empty() {
             bail!("profiles must not be empty");
         }
-        if let Some(path) = &self.engine.snapshot_path {
-            if path.trim().is_empty() {
-                bail!("engine.snapshot_path must not be empty when configured");
-            }
-            if !path.ends_with(".bin") {
-                bail!("engine.snapshot_path must point to a .bin snapshot");
-            }
-        } else {
-            bail!("engine.snapshot_path is required and must point to a .bin snapshot");
-        }
 
         let mut profile_ids = HashSet::new();
         for profile in &self.profiles {
@@ -151,29 +55,8 @@ impl AppConfig {
             if !profile_ids.insert(profile.id.clone()) {
                 bail!("duplicate profile.id found: {}", profile.id);
             }
-
-            let mut rule_ids = HashSet::new();
-            for rule in &profile.rules {
-                if rule.id.trim().is_empty() {
-                    bail!("rule.id must not be empty in profile {}", profile.id);
-                }
-                if !rule_ids.insert(rule.id.clone()) {
-                    bail!(
-                        "duplicate rule.id found in profile {}: {}",
-                        profile.id,
-                        rule.id
-                    );
-                }
-                if let Some(status) = rule.status_code {
-                    if !(100..=599).contains(&status) {
-                        bail!(
-                            "profile {} rule {} has invalid status_code {}",
-                            profile.id,
-                            rule.id,
-                            status
-                        );
-                    }
-                }
+            if profile.wasm_path.trim().is_empty() {
+                bail!("profile {} wasm_path must not be empty", profile.id);
             }
         }
 
@@ -236,12 +119,8 @@ mod tests {
             }],
             profiles: vec![ProfileConfig {
                 id: "public".to_string(),
-                default_action: Action::Allow,
-                rules: vec![],
+                wasm_path: "wasm/public.wasm".to_string(),
             }],
-            engine: EngineConfig {
-                snapshot_path: Some("examples/rules.snapshot.bin".to_string()),
-            },
         }
     }
 
@@ -269,6 +148,13 @@ mod tests {
             },
             profile: "public".to_string(),
         });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_fails_empty_wasm_path() {
+        let mut cfg = valid_config();
+        cfg.profiles[0].wasm_path = "  ".to_string();
         assert!(cfg.validate().is_err());
     }
 }
