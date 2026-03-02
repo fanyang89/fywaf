@@ -102,8 +102,8 @@ impl WafEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
     use crate::wasm::WasmVm;
+    use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
 
     fn make_req(path: &str) -> RequestMeta {
         RequestMeta {
@@ -163,7 +163,10 @@ mod tests {
         let engine = engine_with_wat("p", wat);
         let decision = engine.decide("p", &make_req("/")).unwrap();
         assert!(!decision.allow);
-        assert_eq!(decision.status_code, 403, "invalid status should default to 403 for blocks");
+        assert_eq!(
+            decision.status_code, 403,
+            "invalid status should default to 403 for blocks"
+        );
     }
 
     #[test]
@@ -178,6 +181,9 @@ mod tests {
         let engine = engine_with_wat("p", wat);
         let decision = engine.decide("p", &make_req("/")).unwrap();
         assert!(decision.allow);
-        assert_eq!(decision.status_code, 200, "missing status should default to 200 for allows");
+        assert_eq!(
+            decision.status_code, 200,
+            "missing status should default to 200 for allows"
+        );
     }
 }

@@ -51,7 +51,8 @@ impl WasmVm {
 
     fn load_module_from_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
         // Module::new accepts both binary .wasm and text .wat formats.
-        let module = Module::new(&self.engine, wasm_bytes).context("failed to compile wasm module")?;
+        let module =
+            Module::new(&self.engine, wasm_bytes).context("failed to compile wasm module")?;
 
         let mut linker = Linker::new(&self.engine);
         linker.func_wrap(
@@ -324,6 +325,9 @@ mod tests {
         let result = vm.decide("allow", &req);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("exceeds the maximum allowed length"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("exceeds the maximum allowed length"),
+            "unexpected error: {msg}"
+        );
     }
 }
