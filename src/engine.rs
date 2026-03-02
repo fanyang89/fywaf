@@ -8,8 +8,7 @@ use anyhow::{Context, Result};
 use crate::config::AppConfig;
 use crate::wasm::{WasmRequest, WasmVm};
 
-static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> =
-    LazyLock::new(HashMap::new);
+static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> = LazyLock::new(HashMap::new);
 
 #[derive(Debug)]
 pub struct WafEngine {
@@ -82,10 +81,7 @@ impl WafEngine {
             user_agent: req.user_agent.as_deref(),
             headers,
             body: req.body.as_deref(),
-            params: self
-                .profile_params
-                .get(profile_id)
-                .unwrap_or(&EMPTY_PARAMS),
+            params: self.profile_params.get(profile_id).unwrap_or(&EMPTY_PARAMS),
         };
 
         let wasm_decision = self

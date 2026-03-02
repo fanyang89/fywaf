@@ -266,8 +266,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::LazyLock;
 
-    static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> =
-        LazyLock::new(HashMap::new);
+    static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> = LazyLock::new(HashMap::new);
 
     fn make_request() -> WasmRequest<'static> {
         WasmRequest {
