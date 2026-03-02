@@ -178,7 +178,7 @@ fn run_rules(req: &Request<'_>) -> Decision {
                 status: 500,
                 message: Some(String::from("internal error: rule set unavailable")),
                 rule_id: None,
-            }
+            };
         }
     };
 
