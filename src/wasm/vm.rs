@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
 
 use super::types::{WasmDecision, WasmRequest};
@@ -274,6 +274,7 @@ mod tests {
             user_agent: None,
             headers: HashMap::new(),
             body: None,
+            params: HashMap::new(),
         }
     }
 
@@ -325,6 +326,7 @@ mod tests {
             user_agent: None,
             headers: HashMap::new(),
             body: Some(&big_body),
+            params: HashMap::new(),
         };
         let result = vm.decide("allow", &req);
         assert!(result.is_err());

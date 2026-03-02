@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -28,6 +28,10 @@ pub struct UpstreamConfig {
 pub struct ProfileConfig {
     pub id: String,
     pub wasm_path: String,
+    /// Optional key-value parameters forwarded to the WASM module in each
+    /// request JSON (e.g. `paranoia_level`, `anomaly_threshold`).
+    #[serde(default)]
+    pub params: HashMap<String, serde_json::Value>,
 }
 
 impl AppConfig {
@@ -120,6 +124,7 @@ mod tests {
             profiles: vec![ProfileConfig {
                 id: "public".to_string(),
                 wasm_path: "wasm/public.wasm".to_string(),
+                params: HashMap::new(),
             }],
         }
     }

@@ -10,6 +10,9 @@ pub struct WasmRequest<'a> {
     pub user_agent: Option<&'a str>,
     pub headers: HashMap<&'a str, &'a str>,
     pub body: Option<&'a str>,
+    /// Profile-level parameters forwarded to the WASM module (e.g. paranoia_level).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub params: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -54,6 +57,7 @@ mod tests {
             user_agent: Some("test"),
             headers: HashMap::new(),
             body: None,
+            params: HashMap::new(),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("192.168.1.1"));
