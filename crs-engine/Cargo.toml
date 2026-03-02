@@ -1,0 +1,17 @@
+[package]
+name = "crs-engine"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+crs-parser = { path = "../crs-parser" }
+regex = { version = "1", default-features = false, features = ["unicode"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[build-dependencies]
+crs-parser = { path = "../crs-parser" }
+serde_json = "1.0"

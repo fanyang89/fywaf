@@ -8,3 +8,12 @@ sites:
 profiles:
   - id: "public"
     wasm_path: "wasm/public.wasm"
+
+  # CRS-backed profile using the crs-engine WASM module.
+  # paranoia_level: 1-4 (default 1 — only PL1 rules active)
+  # anomaly_threshold: score at which a request is blocked (default 5 = one CRITICAL hit)
+  - id: "crs"
+    wasm_path: "wasm/crs_engine.wasm"
+    params:
+      paranoia_level: 1
+      anomaly_threshold: 5
