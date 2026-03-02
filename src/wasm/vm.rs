@@ -16,6 +16,11 @@ const WASM_PAGE_SIZE: u64 = 65536;
 // RESULT_BUF_LEN (one page / 64 KiB), so a larger value is always a bug or attack.
 const MAX_RESULT_LEN: i32 = WASM_PAGE_SIZE as i32;
 
+// Maximum serialized request JSON size written to the guest buffer.
+// Guests must allocate at least this many bytes for their request buffer.
+// Requests that serialize to more bytes are rejected without invoking the WASM module.
+const MAX_REQUEST_JSON_LEN: usize = WASM_PAGE_SIZE as usize; // 64 KiB
+
 pub struct WasmModule {
     module: Module,
 }
@@ -44,12 +49,9 @@ impl WasmVm {
         })
     }
 
-    pub fn load_module(&mut self, profile_id: &str, wasm_path: &Path) -> Result<()> {
-        let wasm_bytes = std::fs::read(wasm_path)
-            .with_context(|| format!("failed to read wasm file: {}", wasm_path.display()))?;
-
-        let module = Module::from_binary(&self.engine, &wasm_bytes)
-            .with_context(|| format!("failed to compile wasm module: {}", wasm_path.display()))?;
+    fn load_module_from_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
+        // Module::new accepts both binary .wasm and text .wat formats.
+        let module = Module::new(&self.engine, wasm_bytes).context("failed to compile wasm module")?;
 
         let mut linker = Linker::new(&self.engine);
         linker.func_wrap(
@@ -82,6 +84,13 @@ impl WasmVm {
         self.modules
             .insert(profile_id.to_string(), WasmModule { module });
         Ok(())
+    }
+
+    pub fn load_module(&mut self, profile_id: &str, wasm_path: &Path) -> Result<()> {
+        let wasm_bytes = std::fs::read(wasm_path)
+            .with_context(|| format!("failed to read wasm file: {}", wasm_path.display()))?;
+        self.load_module_from_bytes(profile_id, &wasm_bytes)
+            .with_context(|| format!("failed to load wasm module: {}", wasm_path.display()))
     }
 
     pub fn decide(&self, profile_id: &str, req: &WasmRequest) -> Result<WasmDecision> {
@@ -123,6 +132,17 @@ impl WasmVm {
         let req_json = serde_json::to_string(req).context("failed to serialize request")?;
         let req_bytes = req_json.as_bytes();
         let req_len = req_bytes.len() as i32;
+
+        // Reject requests whose serialized JSON exceeds the agreed host-side cap.
+        // This prevents writing past the guest's static request buffer and avoids
+        // unbounded memory growth allocations (potential DoS).
+        if req_bytes.len() > MAX_REQUEST_JSON_LEN {
+            bail!(
+                "serialized request ({} bytes) exceeds the maximum allowed length ({} bytes)",
+                req_bytes.len(),
+                MAX_REQUEST_JSON_LEN
+            );
+        }
 
         // Ask the guest for the address of its request buffer so we never
         // write into an arbitrary hard-coded offset.
@@ -220,6 +240,12 @@ impl WasmVm {
     pub fn has_profile(&self, profile_id: &str) -> bool {
         self.modules.contains_key(profile_id)
     }
+
+    /// Test-only entry point: load a module directly from bytes (binary WASM or WAT text).
+    #[cfg(test)]
+    pub(crate) fn load_module_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
+        self.load_module_from_bytes(profile_id, wasm_bytes)
+    }
 }
 
 impl Default for WasmVm {
@@ -231,7 +257,20 @@ impl Default for WasmVm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
     use std::collections::HashMap;
+
+    fn make_request() -> WasmRequest<'static> {
+        WasmRequest {
+            client_ip: "127.0.0.1",
+            method: "GET",
+            path: "/",
+            query: None,
+            user_agent: None,
+            headers: HashMap::new(),
+            body: None,
+        }
+    }
 
     #[test]
     fn wasm_vm_creation() {
@@ -242,6 +281,37 @@ mod tests {
     #[test]
     fn missing_profile() {
         let vm = WasmVm::new().unwrap();
+        let req = make_request();
+        let result = vm.decide("nonexistent", &req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decide_allow_all() {
+        let mut vm = WasmVm::new().unwrap();
+        vm.load_module_bytes("allow", ALLOW_ALL_WAT).unwrap();
+        let decision = vm.decide("allow", &make_request()).unwrap();
+        assert!(decision.allow);
+        assert_eq!(decision.status, Some(200));
+    }
+
+    #[test]
+    fn decide_block_all() {
+        let mut vm = WasmVm::new().unwrap();
+        vm.load_module_bytes("block", BLOCK_ALL_WAT).unwrap();
+        let decision = vm.decide("block", &make_request()).unwrap();
+        assert!(!decision.allow);
+        assert_eq!(decision.status, Some(403));
+        assert_eq!(decision.message.as_deref(), Some("blocked"));
+        assert_eq!(decision.rule_id.as_deref(), Some("blk"));
+    }
+
+    #[test]
+    fn request_too_large_is_rejected() {
+        let mut vm = WasmVm::new().unwrap();
+        vm.load_module_bytes("allow", ALLOW_ALL_WAT).unwrap();
+        // Build a body that causes the serialized JSON to exceed MAX_REQUEST_JSON_LEN.
+        let big_body = "x".repeat(MAX_REQUEST_JSON_LEN + 1);
         let req = WasmRequest {
             client_ip: "127.0.0.1",
             method: "GET",
@@ -249,9 +319,11 @@ mod tests {
             query: None,
             user_agent: None,
             headers: HashMap::new(),
-            body: None,
+            body: Some(&big_body),
         };
-        let result = vm.decide("nonexistent", &req);
+        let result = vm.decide("allow", &req);
         assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("exceeds the maximum allowed length"), "unexpected error: {msg}");
     }
 }
