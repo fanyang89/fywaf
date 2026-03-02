@@ -244,7 +244,7 @@ impl WasmVm {
 
     /// Test-only entry point: load a module directly from bytes (binary WASM or WAT text).
     #[cfg(test)]
-    pub(crate) fn load_module_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
+    pub(crate) fn load_module_from_bytes_pub(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
         self.load_module_from_bytes(profile_id, wasm_bytes)
     }
 }
