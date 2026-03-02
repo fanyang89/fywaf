@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use wasmtime::{Engine, Linker, Module, Store};
 
 use super::types::{WasmDecision, WasmRequest};
@@ -49,7 +49,7 @@ impl WasmVm {
         })
     }
 
-    fn load_module_from_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
+    pub fn load_module_from_bytes(&mut self, profile_id: &str, wasm_bytes: &[u8]) -> Result<()> {
         // Module::new accepts both binary .wasm and text .wat formats.
         let module =
             Module::new(&self.engine, wasm_bytes).context("failed to compile wasm module")?;
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn decide_allow_all() {
         let mut vm = WasmVm::new().unwrap();
-        vm.load_module_bytes("allow", ALLOW_ALL_WAT).unwrap();
+        vm.load_module_from_bytes("allow", ALLOW_ALL_WAT).unwrap();
         let decision = vm.decide("allow", &make_request()).unwrap();
         assert!(decision.allow);
         assert_eq!(decision.status, Some(200));
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn decide_block_all() {
         let mut vm = WasmVm::new().unwrap();
-        vm.load_module_bytes("block", BLOCK_ALL_WAT).unwrap();
+        vm.load_module_from_bytes("block", BLOCK_ALL_WAT).unwrap();
         let decision = vm.decide("block", &make_request()).unwrap();
         assert!(!decision.allow);
         assert_eq!(decision.status, Some(403));
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn request_too_large_is_rejected() {
         let mut vm = WasmVm::new().unwrap();
-        vm.load_module_bytes("allow", ALLOW_ALL_WAT).unwrap();
+        vm.load_module_from_bytes("allow", ALLOW_ALL_WAT).unwrap();
         // Build a body that causes the serialized JSON to exceed MAX_REQUEST_JSON_LEN.
         let big_body = "x".repeat(MAX_REQUEST_JSON_LEN + 1);
         let req = WasmRequest {

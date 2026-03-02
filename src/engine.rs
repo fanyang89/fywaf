@@ -118,7 +118,7 @@ mod tests {
 
     fn engine_with_wat(profile_id: &str, wat: &[u8]) -> WafEngine {
         let mut vm = WasmVm::new().unwrap();
-        vm.load_module_bytes(profile_id, wat).unwrap();
+        vm.load_module_from_bytes(profile_id, wat).unwrap();
         WafEngine::from_wasm_vm(vm)
     }
 
