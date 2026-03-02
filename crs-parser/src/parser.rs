@@ -270,7 +270,8 @@ fn parse_variables(s: &str) -> Vec<Variable> {
 }
 
 fn parse_variable(s: &str) -> Variable {
-    // Handle negation prefix `!`
+    // Capture negation before stripping `!` so the flag is available below.
+    let negated = s.starts_with('!');
     let s = s.strip_prefix('!').unwrap_or(s);
 
     let upper = s.to_uppercase();
@@ -295,7 +296,7 @@ fn parse_variable(s: &str) -> Variable {
     }
     if upper.starts_with("REQUEST_HEADERS:") {
         let name = s["REQUEST_HEADERS:".len()..].to_string();
-        if s.starts_with('!') {
+        if negated {
             return Variable::RequestHeaderExclude(name);
         }
         return Variable::RequestHeader(name);
@@ -610,7 +611,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_detect_xss_becomes_unsupported_op() {
+    fn parse_negated_request_header_variable() {
+        // `!REQUEST_HEADERS:User-Agent` must produce RequestHeaderExclude, not RequestHeader.
+        let vars = parse_variables("!REQUEST_HEADERS:User-Agent");
+        assert_eq!(vars.len(), 1);
+        assert!(
+            matches!(vars[0], Variable::RequestHeaderExclude(_)),
+            "expected RequestHeaderExclude, got {:?}",
+            vars[0]
+        );
+    }
+
+    #[test]
+    fn parse_detect_xss_operator() {
         let input = r#"SecRule ARGS "@detectXSS" "id:941100,phase:2,block,msg:'XSS',tag:'paranoia-level/1'""#;
         let rules = parse_str(input);
         assert_eq!(rules.len(), 1);

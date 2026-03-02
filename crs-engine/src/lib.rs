@@ -24,10 +24,30 @@ mod transforms;
 use engine::evaluate;
 
 // ---------------------------------------------------------------------------
-// Embedded rule data
+// Embedded rule data — parsed once and cached
 // ---------------------------------------------------------------------------
 
 static CRS_RULES_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/crs_rules.json"));
+
+struct RulesCache(core::cell::UnsafeCell<Option<Vec<crs_parser::Rule>>>);
+// SAFETY: The WASM target is single-threaded; there is no concurrent access.
+unsafe impl Sync for RulesCache {}
+static RULES_CACHE: RulesCache = RulesCache(core::cell::UnsafeCell::new(None));
+
+/// Return a reference to the cached, parsed CRS rules.
+///
+/// The rules are deserialized from `CRS_RULES_JSON` on the first call and
+/// stored in a `static`; subsequent calls return the cached slice directly.
+fn get_rules() -> &'static [crs_parser::Rule] {
+    // SAFETY: WASM is single-threaded; `decide` is never re-entered.
+    unsafe {
+        let slot = &mut *RULES_CACHE.0.get();
+        if slot.is_none() {
+            *slot = Some(serde_json::from_str(CRS_RULES_JSON).unwrap_or_default());
+        }
+        slot.as_deref().unwrap_or_default()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // WASM shared memory buffers
@@ -92,9 +112,9 @@ pub extern "C" fn decide(req_len: i32) -> i32 {
         unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(REQ_BUF) as *const u8, req_len) };
 
     let decision = match core::str::from_utf8(req_bytes) {
-        Err(_) => allow(),
+        Err(_) => bad_request(),
         Ok(json_str) => match serde_json::from_str::<Request<'_>>(json_str) {
-            Err(_) => allow(),
+            Err(_) => bad_request(),
             Ok(req) => run_rules(&req),
         },
     };
@@ -123,14 +143,11 @@ fn run_rules(req: &Request<'_>) -> Decision {
         .map(|n| n as u32)
         .unwrap_or(5);
 
-    // Lazily parse the embedded rules.
-    let rules: Vec<crs_parser::Rule> = match serde_json::from_str(CRS_RULES_JSON) {
-        Ok(r) => r,
-        Err(_) => return allow(),
-    };
+    // Use the cached (pre-parsed) rule set — no per-request deserialization.
+    let rules = get_rules();
 
     evaluate(
-        &rules,
+        rules,
         req.method,
         req.path,
         req.query,
@@ -154,6 +171,19 @@ fn allow() -> Decision {
         allow: true,
         status: 200,
         message: None,
+        rule_id: None,
+    }
+}
+
+/// Return a fail-closed decision for malformed (non-UTF-8 / non-JSON) requests.
+///
+/// A WAF must never allow a request that it cannot inspect; returning 400
+/// prevents trivial bypass via malformed payloads.
+fn bad_request() -> Decision {
+    Decision {
+        allow: false,
+        status: 400,
+        message: Some(String::from("bad request")),
         rule_id: None,
     }
 }

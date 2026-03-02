@@ -3,9 +3,10 @@
 //! Parses ModSecurity `SecRule` directives into structured [`Rule`] values.
 //! Only the subset of the SecRule language used by CRS is supported.
 //!
-//! Unsupported operators (e.g. `@detectXSS`, `@detectSQLi`) produce
-//! [`Operator::Unsupported`] — the engine will treat them as a non-match
-//! (pass-through) at runtime.
+//! Operators that are not explicitly supported by this crate produce
+//! [`Operator::Unsupported`], which the engine will treat as a non-match
+//! (pass-through) at runtime. `@detectXSS` and `@detectSQLi` are parsed into
+//! [`Operator::DetectXss`] and [`Operator::DetectSqli`] respectively.
 
 pub mod parser;
 pub mod types;

@@ -5,12 +5,23 @@
 
 extern crate alloc;
 use alloc::{
+    collections::BTreeMap,
     string::{String, ToString},
     vec::Vec,
 };
 
 use crs_parser::Operator;
 use regex::Regex;
+
+// ---------------------------------------------------------------------------
+// Regex cache — avoids recompiling the same pattern on every evaluation.
+// WASM is single-threaded so a plain `UnsafeCell` is sufficient.
+// ---------------------------------------------------------------------------
+
+struct RegexCache(core::cell::UnsafeCell<BTreeMap<String, Regex>>);
+// SAFETY: The WASM target is single-threaded; there is no concurrent access.
+unsafe impl Sync for RegexCache {}
+static REGEX_CACHE: RegexCache = RegexCache(core::cell::UnsafeCell::new(BTreeMap::new()));
 
 /// Evaluate `operator` against `value`.  Returns `true` on match.
 ///
@@ -48,12 +59,21 @@ pub fn matches(operator: &Operator, value: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn rx_match(pattern: &str, value: &str) -> bool {
-    // Build the regex. CRS patterns often use (?i) inline flags; the `regex`
-    // crate supports those natively.
-    match Regex::new(pattern) {
-        Ok(re) => re.is_match(value),
-        // Unparseable pattern — fail safe (no match).
-        Err(_) => false,
+    // Look up (or compile and insert) the regex in the static cache so each
+    // CRS pattern is compiled at most once per WASM instance lifetime.
+    // SAFETY: WASM is single-threaded; `rx_match` is never re-entered.
+    unsafe {
+        let cache = &mut *REGEX_CACHE.0.get();
+        if !cache.contains_key(pattern) {
+            match Regex::new(pattern) {
+                Ok(re) => {
+                    cache.insert(pattern.to_string(), re);
+                }
+                // Unparseable pattern — fail safe (no match).
+                Err(_) => return false,
+            }
+        }
+        cache.get(pattern).map_or(false, |re| re.is_match(value))
     }
 }
 

@@ -264,6 +264,10 @@ mod tests {
     use super::*;
     use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
     use std::collections::HashMap;
+    use std::sync::LazyLock;
+
+    static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> =
+        LazyLock::new(HashMap::new);
 
     fn make_request() -> WasmRequest<'static> {
         WasmRequest {
@@ -274,7 +278,7 @@ mod tests {
             user_agent: None,
             headers: HashMap::new(),
             body: None,
-            params: HashMap::new(),
+            params: &EMPTY_PARAMS,
         }
     }
 
@@ -326,7 +330,7 @@ mod tests {
             user_agent: None,
             headers: HashMap::new(),
             body: Some(&big_body),
-            params: HashMap::new(),
+            params: &EMPTY_PARAMS,
         };
         let result = vm.decide("allow", &req);
         assert!(result.is_err());

@@ -1,11 +1,15 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result};
 
 use crate::config::AppConfig;
 use crate::wasm::{WasmRequest, WasmVm};
+
+static EMPTY_PARAMS: LazyLock<HashMap<String, serde_json::Value>> =
+    LazyLock::new(HashMap::new);
 
 #[derive(Debug)]
 pub struct WafEngine {
@@ -81,8 +85,7 @@ impl WafEngine {
             params: self
                 .profile_params
                 .get(profile_id)
-                .cloned()
-                .unwrap_or_default(),
+                .unwrap_or(&EMPTY_PARAMS),
         };
 
         let wasm_decision = self

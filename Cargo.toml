@@ -21,4 +21,3 @@ wasmtime = "29"
 
 [profile.release.package.crs-engine]
 opt-level = "z"
-lto = true
