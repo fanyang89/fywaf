@@ -46,6 +46,12 @@ impl WafEngine {
         Ok(Self { vm })
     }
 
+    /// Test-only constructor: build an engine from a pre-populated `WasmVm`.
+    #[cfg(test)]
+    pub(crate) fn from_wasm_vm(vm: WasmVm) -> Self {
+        Self { vm }
+    }
+
     pub fn decide(&self, profile_id: &str, req: &RequestMeta) -> Result<Decision> {
         let client_ip = req.client_ip.to_string();
         let headers: HashMap<&str, &str> = req
@@ -96,21 +102,87 @@ impl WafEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
+
+    fn make_req(path: &str) -> RequestMeta {
+        RequestMeta {
+            client_ip: "192.168.1.1".parse().unwrap(),
+            method: "GET".to_string(),
+            path: path.to_string(),
+            query: None,
+            user_agent: None,
+            headers: HashMap::new(),
+            body: None,
+        }
+    }
+
+    fn engine_with_wat(profile_id: &str, wat: &[u8]) -> WafEngine {
+        let mut vm = WasmVm::new().unwrap();
+        vm.load_module_from_bytes(profile_id, wat).unwrap();
+        WafEngine::from_wasm_vm(vm)
+    }
 
     #[test]
     fn request_meta_construction() {
-        let req = RequestMeta {
-            client_ip: "192.168.1.1".parse().unwrap(),
-            method: "GET".to_string(),
-            path: "/api/test".to_string(),
-            query: Some("foo=bar".to_string()),
-            user_agent: Some("test-agent".to_string()),
-            headers: HashMap::from([("content-type".to_string(), "application/json".to_string())]),
-            body: None,
-        };
-
+        let req = make_req("/api/test");
         assert_eq!(req.method, "GET");
         assert_eq!(req.path, "/api/test");
-        assert_eq!(req.query, Some("foo=bar".to_string()));
+    }
+
+    #[test]
+    fn decide_allow_propagates_correctly() {
+        let engine = engine_with_wat("p", ALLOW_ALL_WAT);
+        let decision = engine.decide("p", &make_req("/")).unwrap();
+        assert!(decision.allow);
+        assert_eq!(decision.status_code, 200);
+        assert_eq!(decision.profile_id, "p");
+    }
+
+    #[test]
+    fn decide_block_propagates_correctly() {
+        let engine = engine_with_wat("p", BLOCK_ALL_WAT);
+        let decision = engine.decide("p", &make_req("/")).unwrap();
+        assert!(!decision.allow);
+        assert_eq!(decision.status_code, 403);
+        assert_eq!(decision.message.as_deref(), Some("blocked"));
+        assert_eq!(decision.rule_id.as_deref(), Some("blk"));
+    }
+
+    #[test]
+    fn invalid_status_defaults_to_403_on_block() {
+        // A WAT module that returns allow=false with status=0 (invalid).
+        // The engine should default to 403.
+        let wat = br#"(module
+  (memory (export "memory") 2)
+  (func (export "get_req_ptr") (result i32) i32.const 0)
+  (func (export "get_result_ptr") (result i32) i32.const 65536)
+  (data (i32.const 65536) "{\"allow\":false,\"status\":0}")
+  (func (export "decide") (param i32) (result i32) i32.const 26)
+)"#;
+        let engine = engine_with_wat("p", wat);
+        let decision = engine.decide("p", &make_req("/")).unwrap();
+        assert!(!decision.allow);
+        assert_eq!(
+            decision.status_code, 403,
+            "invalid status should default to 403 for blocks"
+        );
+    }
+
+    #[test]
+    fn missing_status_defaults_to_200_on_allow() {
+        let wat = br#"(module
+  (memory (export "memory") 2)
+  (func (export "get_req_ptr") (result i32) i32.const 0)
+  (func (export "get_result_ptr") (result i32) i32.const 65536)
+  (data (i32.const 65536) "{\"allow\":true}")
+  (func (export "decide") (param i32) (result i32) i32.const 14)
+)"#;
+        let engine = engine_with_wat("p", wat);
+        let decision = engine.decide("p", &make_req("/")).unwrap();
+        assert!(decision.allow);
+        assert_eq!(
+            decision.status_code, 200,
+            "missing status should default to 200 for allows"
+        );
     }
 }
