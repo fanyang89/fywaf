@@ -102,7 +102,6 @@ impl WafEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wasm::WasmVm;
     use crate::wasm::test_fixtures::{ALLOW_ALL_WAT, BLOCK_ALL_WAT};
 
     fn make_req(path: &str) -> RequestMeta {
