@@ -15,19 +15,42 @@ use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Regex cache — avoids recompiling the same pattern on every evaluation.
-// WASM is single-threaded so a plain `UnsafeCell` is sufficient.
+//
+// On wasm32 (single-threaded) we use a plain UnsafeCell<BTreeMap> — no
+// locking overhead, no std dependency.
+//
+// On non-wasm32 (host, cargo test — potentially multi-threaded) we use a
+// std Mutex so parallel test threads don't race on the map.
 // ---------------------------------------------------------------------------
 
-struct RegexCache(core::cell::UnsafeCell<BTreeMap<String, Regex>>);
-// SAFETY: The WASM target is single-threaded; there is no concurrent access.
-unsafe impl Sync for RegexCache {}
-static REGEX_CACHE: RegexCache = RegexCache(core::cell::UnsafeCell::new(BTreeMap::new()));
+#[cfg(target_arch = "wasm32")]
+mod regex_cache {
+    use super::*;
+    struct RegexCache(core::cell::UnsafeCell<BTreeMap<String, Regex>>);
+    // SAFETY: The WASM target is single-threaded; there is no concurrent access.
+    unsafe impl Sync for RegexCache {}
+    static CACHE: RegexCache = RegexCache(core::cell::UnsafeCell::new(BTreeMap::new()));
+
+    pub fn with_cache<F: FnOnce(&mut BTreeMap<String, Regex>) -> bool>(f: F) -> bool {
+        // SAFETY: WASM is single-threaded; this is never re-entered.
+        unsafe { f(&mut *CACHE.0.get()) }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+mod regex_cache {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<BTreeMap<String, Regex>>> = OnceLock::new();
+
+    pub fn with_cache<F: FnOnce(&mut BTreeMap<String, Regex>) -> bool>(f: F) -> bool {
+        let mutex = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+        let mut guard = mutex.lock().unwrap();
+        f(&mut *guard)
+    }
+}
 
 /// Evaluate `operator` against `value`.  Returns `true` on match.
-///
-/// `data_files_dir` is the path to the directory containing `.data` files
-/// used by `@pmFromFile`.  In the WASM build this is embedded at compile time
-/// (handled by the build script); at test time it can be a real path.
 pub fn matches(operator: &Operator, value: &str) -> bool {
     match operator {
         Operator::Rx(pattern) => rx_match(pattern, value),
@@ -61,20 +84,22 @@ pub fn matches(operator: &Operator, value: &str) -> bool {
 fn rx_match(pattern: &str, value: &str) -> bool {
     // Look up (or compile and insert) the regex in the static cache so each
     // CRS pattern is compiled at most once per WASM instance lifetime.
-    // SAFETY: WASM is single-threaded; `rx_match` is never re-entered.
-    unsafe {
-        let cache = &mut *REGEX_CACHE.0.get();
-        if !cache.contains_key(pattern) {
-            match Regex::new(pattern) {
+    let owned_pattern = pattern.to_string();
+    let owned_value = value.to_string();
+    regex_cache::with_cache(move |cache| {
+        if !cache.contains_key(&owned_pattern) {
+            match Regex::new(&owned_pattern) {
                 Ok(re) => {
-                    cache.insert(pattern.to_string(), re);
+                    cache.insert(owned_pattern.clone(), re);
                 }
                 // Unparseable pattern — fail safe (no match).
                 Err(_) => return false,
             }
         }
-        cache.get(pattern).map_or(false, |re| re.is_match(value))
-    }
+        cache
+            .get(&owned_pattern)
+            .map_or(false, |re| re.is_match(&owned_value))
+    })
 }
 
 // ---------------------------------------------------------------------------

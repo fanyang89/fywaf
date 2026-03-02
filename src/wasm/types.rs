@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Serde passes `&&T` for `skip_serializing_if` when the field is a reference.
+fn params_is_empty(m: &&HashMap<String, serde_json::Value>) -> bool {
+    m.is_empty()
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WasmRequest<'a> {
     pub client_ip: &'a str,
@@ -11,7 +16,7 @@ pub struct WasmRequest<'a> {
     pub headers: HashMap<&'a str, &'a str>,
     pub body: Option<&'a str>,
     /// Profile-level parameters forwarded to the WASM module (e.g. paranoia_level).
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    #[serde(skip_serializing_if = "params_is_empty")]
     pub params: &'a HashMap<String, serde_json::Value>,
 }
 
