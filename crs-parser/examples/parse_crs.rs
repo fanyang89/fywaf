@@ -8,7 +8,10 @@ fn main() {
         let path = Path::new(conf);
         match crs_parser::parse_conf(path) {
             Ok(rules) => {
-                let blocking = rules.iter().filter(|r| r.action == crs_parser::Action::Block).count();
+                let blocking = rules
+                    .iter()
+                    .filter(|r| r.action == crs_parser::Action::Block)
+                    .count();
                 let pl1 = rules.iter().filter(|r| r.paranoia_level == 1).count();
                 let chained = rules.iter().filter(|r| !r.chained.is_empty()).count();
                 println!("{}", conf.split('/').last().unwrap());

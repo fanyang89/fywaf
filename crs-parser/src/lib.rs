@@ -7,10 +7,8 @@
 //! [`Operator::Unsupported`] — the engine will treat them as a non-match
 //! (pass-through) at runtime.
 
-pub mod types;
 pub mod parser;
+pub mod types;
 
 pub use parser::parse_conf;
-pub use types::{
-    Action, ChainedRule, Operator, Phase, Rule, Transform, Variable,
-};
+pub use types::{Action, ChainedRule, Operator, Phase, Rule, Transform, Variable};
